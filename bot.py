@@ -39,7 +39,6 @@ if not AGNES_API_KEY:
     sys.exit(1)
 print("✅ AGNES_API_KEY получен", flush=True)
 
-# Группы: сопоставляем названия с токенами и ID
 groups = []
 group_names = ['родительский', 'строительный', 'ai']
 for i, name in enumerate(group_names, 1):
@@ -84,12 +83,11 @@ def generate_text(topic):
         print(f"   ❌ Ошибка текста: {e}", flush=True)
         return None
 
-# ===== Загрузка медиа (фото/видео) по ссылке =====
+# ===== Загрузка медиа =====
 def download_media(url):
     try:
         resp = requests.get(url, stream=True, timeout=60)
         resp.raise_for_status()
-        # Определяем расширение
         content_type = resp.headers.get('content-type', '')
         if 'image' in content_type:
             ext = 'jpg'
@@ -127,7 +125,6 @@ def upload_photo(vk, group_id, filepath):
 
 def upload_video(vk, group_id, filepath):
     try:
-        # Получаем сервер для загрузки видео
         upload_data = vk.video.save(
             name='Видео',
             group_id=abs(group_id),
@@ -138,7 +135,6 @@ def upload_video(vk, group_id, filepath):
         with open(filepath, 'rb') as f:
             files = {'video_file': f}
             resp = requests.post(upload_url, files=files).json()
-        # В ответе приходит owner_id и video_id
         owner_id = resp.get('owner_id')
         video_id = resp.get('video_id') or resp.get('id')
         if owner_id and video_id:
@@ -149,7 +145,6 @@ def upload_video(vk, group_id, filepath):
         print(f"   ❌ Ошибка загрузки видео: {e}", flush=True)
         return None
 
-# ===== Создание поста =====
 def create_post(group, text, minutes, attachment):
     try:
         vk = vk_api.VkApi(token=group['token']).get_api()
@@ -176,21 +171,23 @@ def run_bot():
 
         for event in longpoll.listen():
             if event.type == VkEventType.MESSAGE_NEW and event.to_me:
-                msg = event.text.strip()
+                msg_raw = event.text.strip()
+                # Заменяем HTML-сущности на нормальные символы
+                msg = msg_raw.replace('&quot;', '"').replace('&amp;', '&')
                 user_id = event.user_id
-                print(f"📩 Получено: {msg}", flush=True)
+                print(f"📩 Получено (raw): {msg_raw}", flush=True)
+                print(f"📩 Обработано: {msg}", flush=True)
 
                 if msg.lower() == 'привет':
                     vk_session.method('messages.send', {
                         'user_id': user_id,
-                        'message': 'Привет! Я бот-менеджер.\nКоманда: пост в "Название" на тему "..." с фото/видео https://... через X минут',
+                        'message': 'Привет! Я бот-менеджер.\nКоманда: пост в "Название" на тему "..." [с фото/видео ссылка] через X минут',
                         'random_id': 0
                     })
                     continue
 
                 elif msg.lower().startswith('пост в'):
-                    # Парсим: пост в "Родительский" на тему "..." с фото https://... через X минут
-                    # Можно упростить: ищем кавычки для названия и темы
+                    # Парсим команду
                     match_group = re.search(r'пост в "([^"]+)"', msg, re.I)
                     match_topic = re.search(r'на тему "([^"]+)"', msg, re.I)
                     match_media = re.search(r'(?:с фото|с видео)\s+(https?://[^\s]+)', msg, re.I)
@@ -208,7 +205,6 @@ def run_bot():
                     topic = match_topic.group(1).strip()
                     minutes = int(match_time.group(1))
 
-                    # Находим группу по имени
                     group = None
                     for g in groups:
                         if g['name'] == group_name:
@@ -228,7 +224,6 @@ def run_bot():
                         'random_id': 0
                     })
 
-                    # Генерируем текст
                     text = generate_text(topic)
                     if not text:
                         vk_session.method('messages.send', {
@@ -238,14 +233,12 @@ def run_bot():
                         })
                         continue
 
-                    # Загружаем медиа (если есть)
                     attachment = None
                     if match_media:
                         media_url = match_media.group(1)
                         print(f"   📥 Скачивание медиа: {media_url}", flush=True)
                         filepath = download_media(media_url)
                         if filepath:
-                            # Определяем тип по расширению
                             if filepath.endswith(('.jpg', '.jpeg', '.png', '.gif')):
                                 attachment = upload_photo(vk_api.VkApi(token=group['token']).get_api(), group['id'], filepath)
                             elif filepath.endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')):
@@ -257,7 +250,6 @@ def run_bot():
                         else:
                             print(f"   ⚠️ Не удалось скачать медиа", flush=True)
 
-                    # Создаём пост
                     success = create_post(group, text, minutes, attachment)
                     if success:
                         vk_session.method('messages.send', {
