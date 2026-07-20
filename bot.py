@@ -38,7 +38,6 @@ if not AGNES_API_KEY:
     sys.exit(1)
 print("✅ AGNES_API_KEY получен", flush=True)
 
-# Группы
 groups = []
 group_names = ['родительский', 'строительный', 'ai']
 for i, name in enumerate(group_names, 1):
@@ -76,11 +75,14 @@ def generate_text(topic):
         "temperature": 0.8
     }
     try:
-        print("   🔤 Отправка запроса к Agnes...", flush=True)
-        resp = requests.post(f"{AGNES_BASE_URL}/chat/completions", headers=headers, json=data, timeout=90)
+        print("   🔤 Отправка запроса к Agnes (таймаут 120 сек)...", flush=True)
+        resp = requests.post(f"{AGNES_BASE_URL}/chat/completions", headers=headers, json=data, timeout=120)
         print(f"   🔤 Ответ получен, статус: {resp.status_code}", flush=True)
         resp.raise_for_status()
         return resp.json()['choices'][0]['message']['content']
+    except requests.exceptions.Timeout:
+        print("   ❌ Таймаут при запросе к Agnes (120 сек истекли)", flush=True)
+        return None
     except Exception as e:
         print(f"   ❌ Ошибка генерации текста: {e}", flush=True)
         return None
@@ -186,7 +188,6 @@ def run_bot():
                     continue
 
                 elif msg.lower().startswith('пост в'):
-                    # Парсинг
                     match_group = re.search(r'пост в "([^"]+)"', msg, re.I)
                     match_topic = re.search(r'на тему "([^"]+)"', msg, re.I)
                     match_media = re.search(r'(?:с фото|с видео)\s+(https?://[^\s]+)', msg, re.I)
@@ -219,7 +220,6 @@ def run_bot():
                         'random_id': 0
                     })
 
-                    # 1. Генерация текста
                     text = generate_text(topic)
                     if not text:
                         vk_session.method('messages.send', {
@@ -229,7 +229,6 @@ def run_bot():
                         })
                         continue
 
-                    # 2. Медиа (если есть)
                     attachment = None
                     if match_media:
                         media_url = match_media.group(1)
@@ -250,7 +249,6 @@ def run_bot():
                         else:
                             print("   ⚠️ Не удалось скачать медиа", flush=True)
 
-                    # 3. Создание поста
                     success = create_post(group, text, minutes, attachment)
                     if success:
                         vk_session.method('messages.send', {
@@ -274,7 +272,7 @@ def run_bot():
                     })
 
     except Exception as e:
-        print(f"❌ Ошибка: {e}", flush=True)
+        print(f"❌ Ошибка в боте: {e}", flush=True)
 
 if __name__ == '__main__':
     print("🔹 Запуск...", flush=True)
