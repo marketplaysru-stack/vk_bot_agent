@@ -10,7 +10,7 @@ from vk_api.longpoll import VkLongPoll, VkEventType
 
 sys.stderr = sys.stdout
 
-print("🔹 Бот с командой 'пост' (без генерации)", flush=True)
+print("🔹 Бот с командой 'пост' (использует токен группы)", flush=True)
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -25,18 +25,18 @@ def run_health():
 
 def run_bot():
     try:
-        TOKEN = os.getenv('VK_TOKEN')
+        TOKEN = os.getenv('VK_TOKEN')  # токен пульта для чтения команд
         if not TOKEN:
             print("❌ VK_TOKEN не задан", flush=True)
             return
-        print(f"✅ VK_TOKEN получен (первые 10 символов): {TOKEN[:10]}", flush=True)
 
-        # Читаем группы (для простоты пока только родительская)
-        GROUP_ID = os.getenv('GROUP_ID_1')
-        if not GROUP_ID:
-            print("❌ GROUP_ID_1 не задан", flush=True)
+        # Токен и ID родительской группы
+        GROUP_TOKEN_1 = os.getenv('VK_TOKEN_1')
+        GROUP_ID_1 = os.getenv('GROUP_ID_1')
+        if not GROUP_TOKEN_1 or not GROUP_ID_1:
+            print("❌ VK_TOKEN_1 или GROUP_ID_1 не заданы", flush=True)
             return
-        GROUP_ID = int(GROUP_ID)
+        GROUP_ID_1 = int(GROUP_ID_1)
 
         vk_session = vk_api.VkApi(token=TOKEN)
         longpoll = VkLongPoll(vk_session)
@@ -52,13 +52,13 @@ def run_bot():
                 if msg.lower() == 'привет':
                     vk_session.method('messages.send', {
                         'user_id': user_id,
-                        'message': 'Привет! Бот с командой "пост".\nПример: пост текст через 2 минуты',
+                        'message': 'Привет! Бот готов. Команда: пост текст через X минут',
                         'random_id': 0
                     })
                     continue
 
                 elif msg.lower().startswith('пост'):
-                    # Парсим: пост текст через X минут
+                    # Парсим: пост ТЕКСТ через X минут
                     match_text = re.search(r'пост\s+(.+?)\s+через\s+(\d+)\s+минут', msg, re.I)
                     if not match_text:
                         vk_session.method('messages.send', {
@@ -73,18 +73,17 @@ def run_bot():
 
                     vk_session.method('messages.send', {
                         'user_id': user_id,
-                        'message': f'⏳ Создаю пост... (без генерации)',
+                        'message': f'⏳ Создаю пост в родительской группе...',
                         'random_id': 0
                     })
 
                     try:
-                        vk = vk_api.VkApi(token=TOKEN).get_api()  # используем токен пульта (если он имеет права на стену) или токен группы? Лучше токен группы.
-                        # Для простоты используем токен пульта, но он должен иметь права на стену. Если нет, используем отдельный токен.
-                        # Временно используем токен пульта — если ошибка, потом поменяем.
+                        # Используем ТОКЕН ГРУППЫ для публикации
+                        vk_group = vk_api.VkApi(token=GROUP_TOKEN_1).get_api()
                         publish_time = datetime.now() + timedelta(minutes=minutes)
                         publish_timestamp = int(publish_time.timestamp())
-                        vk.wall.post(
-                            owner_id=GROUP_ID,
+                        vk_group.wall.post(
+                            owner_id=GROUP_ID_1,
                             message=text,
                             attachments=None,
                             publish_date=publish_timestamp,
@@ -92,13 +91,13 @@ def run_bot():
                         )
                         vk_session.method('messages.send', {
                             'user_id': user_id,
-                            'message': f'✅ Пост создан. Опубликуется через {minutes} мин.',
+                            'message': f'✅ Пост создан в родительской группе. Опубликуется через {minutes} мин.',
                             'random_id': 0
                         })
                     except Exception as e:
                         vk_session.method('messages.send', {
                             'user_id': user_id,
-                            'message': f'❌ Ошибка создания поста: {e}',
+                            'message': f'❌ Ошибка: {e}',
                             'random_id': 0
                         })
                     continue
