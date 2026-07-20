@@ -11,7 +11,7 @@ from vk_api.longpoll import VkLongPoll, VkEventType
 
 sys.stderr = sys.stdout
 
-print("🔹 Бот-менеджер с GigaChat", flush=True)
+print("🔹 Бот-менеджер (упрощённый парсинг)", flush=True)
 
 # ===== Health-сервер =====
 class HealthHandler(BaseHTTPRequestHandler):
@@ -32,11 +32,12 @@ if not TOKEN:
     sys.exit(1)
 print(f"✅ VK_TOKEN получен (первые 10 символов): {TOKEN[:10]}", flush=True)
 
+# GigaChat (если не задан, используем заглушку)
 GIGACHAT_API_KEY = os.getenv('GIGACHAT_API_KEY')
-if not GIGACHAT_API_KEY:
-    print("❌ GIGACHAT_API_KEY не задан", flush=True)
-    sys.exit(1)
-print("✅ GIGACHAT_API_KEY получен", flush=True)
+if GIGACHAT_API_KEY:
+    print("✅ GIGACHAT_API_KEY получен", flush=True)
+else:
+    print("⚠️ GIGACHAT_API_KEY не задан — будет использован шаблонный текст", flush=True)
 
 groups = []
 group_names = ['родительский', 'строительный', 'ai']
@@ -57,39 +58,36 @@ if not groups:
     print("❌ Нет ни одной настроенной группы", flush=True)
     sys.exit(1)
 
-# ===== Функция генерации текста через GigaChat =====
-GIGACHAT_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-
+# ===== Функция генерации текста =====
 def generate_text(topic):
     print(f"   🔤 Генерация текста для: {topic}", flush=True)
-    headers = {
-        "Authorization": f"Bearer {GIGACHAT_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-    data = {
-        "model": "GigaChat",  # или "GigaChat-Pro" — если есть доступ
-        "messages": [
-            {"role": "system", "content": "Ты — профессиональный SMM-менеджер. Напиши пост для ВКонтакте на заданную тему. Длина до 200 слов. Добавь 5 хештегов."},
-            {"role": "user", "content": f"Тема: {topic}"}
-        ],
-        "temperature": 0.8
-    }
-    try:
-        print("   🔤 Отправка запроса к GigaChat...", flush=True)
-        resp = requests.post(GIGACHAT_URL, headers=headers, json=data, timeout=60)
-        print(f"   🔤 Ответ получен, статус: {resp.status_code}", flush=True)
-        resp.raise_for_status()
-        result = resp.json()
-        return result['choices'][0]['message']['content']
-    except requests.exceptions.Timeout:
-        print("   ❌ Таймаут при запросе к GigaChat", flush=True)
-        return None
-    except Exception as e:
-        print(f"   ❌ Ошибка GigaChat: {e}", flush=True)
-        if hasattr(e, 'response') and e.response:
-            print(f"   📄 Ответ сервера: {e.response.text[:200]}", flush=True)
-        return None
+    if GIGACHAT_API_KEY:
+        # Используем GigaChat
+        headers = {
+            "Authorization": f"Bearer {GIGACHAT_API_KEY}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        data = {
+            "model": "GigaChat",
+            "messages": [
+                {"role": "system", "content": "Ты — профессиональный SMM-менеджер. Напиши пост для ВКонтакте на заданную тему. Длина до 200 слов. Добавь 5 хештегов."},
+                {"role": "user", "content": f"Тема: {topic}"}
+            ],
+            "temperature": 0.8
+        }
+        try:
+            print("   🔤 Отправка запроса к GigaChat...", flush=True)
+            resp = requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions", headers=headers, json=data, timeout=60)
+            print(f"   🔤 Ответ получен, статус: {resp.status_code}", flush=True)
+            resp.raise_for_status()
+            return resp.json()['choices'][0]['message']['content']
+        except Exception as e:
+            print(f"   ❌ Ошибка GigaChat: {e}", flush=True)
+            # Fallback на шаблон
+    # Если GigaChat не работает или нет ключа — используем шаблон
+    print("   ⚠️ Использую шаблонный текст", flush=True)
+    return f"Это тестовый пост на тему: {topic}. #тест #бот #автоматизация #SMM #ВКонтакте"
 
 # ===== Загрузка медиа =====
 def download_media(url):
@@ -187,21 +185,24 @@ def run_bot():
                 if msg.lower() == 'привет':
                     vk_session.method('messages.send', {
                         'user_id': user_id,
-                        'message': 'Привет! Я бот-менеджер (GigaChat).\nКоманда: пост в "Название" на тему "..." [с фото/видео ссылка] через X минут',
+                        'message': 'Привет! Я бот-менеджер (упрощённый формат).\nКоманда: пост в Название на тему ... через X минут\nПример: пост в Родительский на тему Как помочь ребёнку через 2 минуты',
                         'random_id': 0
                     })
                     continue
 
                 elif msg.lower().startswith('пост в'):
-                    match_group = re.search(r'пост в "([^"]+)"', msg, re.I)
-                    match_topic = re.search(r'на тему "([^"]+)"', msg, re.I)
+                    # Упрощённый парсинг без кавычек
+                    # Формат: пост в Название на тему Текст через X минут
+                    # Извлекаем название группы: после "пост в " до " на тему "
+                    match_group = re.search(r'пост в (.+?) на тему ', msg, re.I)
+                    match_topic = re.search(r'на тему (.+?) через \d+ минут', msg, re.I)
+                    match_time = re.search(r'через (\d+) минут', msg, re.I)
                     match_media = re.search(r'(?:с фото|с видео)\s+(https?://[^\s]+)', msg, re.I)
-                    match_time = re.search(r'через\s+(\d+)\s+минут', msg, re.I)
 
                     if not match_group or not match_topic or not match_time:
                         vk_session.method('messages.send', {
                             'user_id': user_id,
-                            'message': '❌ Формат: пост в "Название" на тему "..." [с фото/видео ссылка] через X минут',
+                            'message': '❌ Формат: пост в Название на тему Текст через X минут\nПример: пост в Родительский на тему Как помочь ребёнку через 2 минуты',
                             'random_id': 0
                         })
                         continue
