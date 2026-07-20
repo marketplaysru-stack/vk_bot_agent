@@ -32,7 +32,6 @@ if not TOKEN:
     sys.exit(1)
 print(f"✅ VK_TOKEN получен (первые 10 символов): {TOKEN[:10]}", flush=True)
 
-# GigaChat (если не задан, используем заглушку)
 GIGACHAT_API_KEY = os.getenv('GIGACHAT_API_KEY')
 if GIGACHAT_API_KEY:
     print("✅ GIGACHAT_API_KEY получен", flush=True)
@@ -62,7 +61,6 @@ if not groups:
 def generate_text(topic):
     print(f"   🔤 Генерация текста для: {topic}", flush=True)
     if GIGACHAT_API_KEY:
-        # Используем GigaChat
         headers = {
             "Authorization": f"Bearer {GIGACHAT_API_KEY}",
             "Content-Type": "application/json",
@@ -84,8 +82,7 @@ def generate_text(topic):
             return resp.json()['choices'][0]['message']['content']
         except Exception as e:
             print(f"   ❌ Ошибка GigaChat: {e}", flush=True)
-            # Fallback на шаблон
-    # Если GigaChat не работает или нет ключа — используем шаблон
+    # Fallback
     print("   ⚠️ Использую шаблонный текст", flush=True)
     return f"Это тестовый пост на тему: {topic}. #тест #бот #автоматизация #SMM #ВКонтакте"
 
@@ -191,9 +188,6 @@ def run_bot():
                     continue
 
                 elif msg.lower().startswith('пост в'):
-                    # Упрощённый парсинг без кавычек
-                    # Формат: пост в Название на тему Текст через X минут
-                    # Извлекаем название группы: после "пост в " до " на тему "
                     match_group = re.search(r'пост в (.+?) на тему ', msg, re.I)
                     match_topic = re.search(r'на тему (.+?) через \d+ минут', msg, re.I)
                     match_time = re.search(r'через (\d+) минут', msg, re.I)
