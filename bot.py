@@ -62,7 +62,7 @@ if not groups:
 AGNES_BASE_URL = "https://apihub.agnes-ai.com/v1"
 
 def generate_text(topic):
-    print(f"   🔤 Генерация текста для: {topic}", flush=True)
+    print(f"   🔤 generate_text: начал для темы '{topic}'", flush=True)
     headers = {
         "Authorization": f"Bearer {AGNES_API_KEY}",
         "Content-Type": "application/json"
@@ -76,11 +76,16 @@ def generate_text(topic):
         "temperature": 0.8
     }
     try:
+        print("   🔤 Отправка запроса к Agnes...", flush=True)
         resp = requests.post(f"{AGNES_BASE_URL}/chat/completions", headers=headers, json=data, timeout=90)
+        print(f"   🔤 Ответ получен, статус: {resp.status_code}", flush=True)
         resp.raise_for_status()
-        return resp.json()['choices'][0]['message']['content']
+        result = resp.json()
+        text = result['choices'][0]['message']['content']
+        print(f"   🔤 Текст сгенерирован, длина: {len(text)} символов", flush=True)
+        return text
     except Exception as e:
-        print(f"   ❌ Ошибка текста: {e}", flush=True)
+        print(f"   ❌ Ошибка генерации текста: {e}", flush=True)
         return None
 
 # ===== Загрузка медиа =====
@@ -147,6 +152,7 @@ def upload_video(vk, group_id, filepath):
 
 def create_post(group, text, minutes, attachment):
     try:
+        print(f"   📤 Создание поста в группе {group['id']}...", flush=True)
         vk = vk_api.VkApi(token=group['token']).get_api()
         publish_time = datetime.now() + timedelta(minutes=minutes)
         publish_timestamp = int(publish_time.timestamp())
@@ -157,6 +163,7 @@ def create_post(group, text, minutes, attachment):
             publish_date=publish_timestamp,
             from_group=1
         )
+        print(f"   ✅ Пост создан в группе {group['id']}", flush=True)
         return True
     except Exception as e:
         print(f"   ❌ Ошибка создания поста в группе {group['id']}: {e}", flush=True)
@@ -172,7 +179,6 @@ def run_bot():
         for event in longpoll.listen():
             if event.type == VkEventType.MESSAGE_NEW and event.to_me:
                 msg_raw = event.text.strip()
-                # Заменяем HTML-сущности на нормальные символы
                 msg = msg_raw.replace('&quot;', '"').replace('&amp;', '&')
                 user_id = event.user_id
                 print(f"📩 Получено (raw): {msg_raw}", flush=True)
@@ -187,7 +193,7 @@ def run_bot():
                     continue
 
                 elif msg.lower().startswith('пост в'):
-                    # Парсим команду
+                    print("🔍 Парсинг команды...", flush=True)
                     match_group = re.search(r'пост в "([^"]+)"', msg, re.I)
                     match_topic = re.search(r'на тему "([^"]+)"', msg, re.I)
                     match_media = re.search(r'(?:с фото|с видео)\s+(https?://[^\s]+)', msg, re.I)
@@ -199,11 +205,13 @@ def run_bot():
                             'message': '❌ Формат: пост в "Название" на тему "..." [с фото/видео ссылка] через X минут',
                             'random_id': 0
                         })
+                        print("❌ Не удалось распарсить команду", flush=True)
                         continue
 
                     group_name = match_group.group(1).strip().lower()
                     topic = match_topic.group(1).strip()
                     minutes = int(match_time.group(1))
+                    print(f"   Группа: {group_name}, тема: {topic}, время: {minutes} мин.", flush=True)
 
                     group = None
                     for g in groups:
@@ -224,6 +232,7 @@ def run_bot():
                         'random_id': 0
                     })
 
+                    print("📝 Генерация текста...", flush=True)
                     text = generate_text(topic)
                     if not text:
                         vk_session.method('messages.send', {
@@ -233,12 +242,15 @@ def run_bot():
                         })
                         continue
 
+                    print("✅ Текст получен", flush=True)
+
                     attachment = None
                     if match_media:
                         media_url = match_media.group(1)
-                        print(f"   📥 Скачивание медиа: {media_url}", flush=True)
+                        print(f"📥 Скачивание медиа: {media_url}", flush=True)
                         filepath = download_media(media_url)
                         if filepath:
+                            print("📤 Загрузка медиа на сервер ВК...", flush=True)
                             if filepath.endswith(('.jpg', '.jpeg', '.png', '.gif')):
                                 attachment = upload_photo(vk_api.VkApi(token=group['token']).get_api(), group['id'], filepath)
                             elif filepath.endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')):
@@ -246,10 +258,11 @@ def run_bot():
                             if attachment:
                                 print(f"   ✅ Медиа загружено: {attachment}", flush=True)
                             else:
-                                print(f"   ⚠️ Не удалось загрузить медиа", flush=True)
+                                print("   ⚠️ Не удалось загрузить медиа", flush=True)
                         else:
-                            print(f"   ⚠️ Не удалось скачать медиа", flush=True)
+                            print("   ⚠️ Не удалось скачать медиа", flush=True)
 
+                    print("📤 Создание поста...", flush=True)
                     success = create_post(group, text, minutes, attachment)
                     if success:
                         vk_session.method('messages.send', {
@@ -257,6 +270,7 @@ def run_bot():
                             'message': f'✅ Пост для группы "{group_name}" создан. Опубликуется через {minutes} мин.',
                             'random_id': 0
                         })
+                        print("✅ Завершено успешно", flush=True)
                     else:
                         vk_session.method('messages.send', {
                             'user_id': user_id,
