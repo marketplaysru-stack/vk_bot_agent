@@ -11,7 +11,7 @@ from vk_api.longpoll import VkLongPoll, VkEventType
 
 sys.stderr = sys.stdout
 
-print("🔹 Финальный бот-менеджер (генерация текста + медиа)", flush=True)
+print("🔹 Бот-менеджер с GigaChat", flush=True)
 
 # ===== Health-сервер =====
 class HealthHandler(BaseHTTPRequestHandler):
@@ -32,11 +32,11 @@ if not TOKEN:
     sys.exit(1)
 print(f"✅ VK_TOKEN получен (первые 10 символов): {TOKEN[:10]}", flush=True)
 
-AGNES_API_KEY = os.getenv('AGNES_API_KEY')
-if not AGNES_API_KEY:
-    print("❌ AGNES_API_KEY не задан", flush=True)
+GIGACHAT_API_KEY = os.getenv('GIGACHAT_API_KEY')
+if not GIGACHAT_API_KEY:
+    print("❌ GIGACHAT_API_KEY не задан", flush=True)
     sys.exit(1)
-print("✅ AGNES_API_KEY получен", flush=True)
+print("✅ GIGACHAT_API_KEY получен", flush=True)
 
 groups = []
 group_names = ['родительский', 'строительный', 'ai']
@@ -57,17 +57,18 @@ if not groups:
     print("❌ Нет ни одной настроенной группы", flush=True)
     sys.exit(1)
 
-# ===== Функции =====
-AGNES_BASE_URL = "https://apihub.agnes-ai.com/v1"
+# ===== Функция генерации текста через GigaChat =====
+GIGACHAT_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
 
 def generate_text(topic):
     print(f"   🔤 Генерация текста для: {topic}", flush=True)
     headers = {
-        "Authorization": f"Bearer {AGNES_API_KEY}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {GIGACHAT_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
     }
     data = {
-        "model": "agnes-2.0-flash",
+        "model": "GigaChat",  # или "GigaChat-Pro" — если есть доступ
         "messages": [
             {"role": "system", "content": "Ты — профессиональный SMM-менеджер. Напиши пост для ВКонтакте на заданную тему. Длина до 200 слов. Добавь 5 хештегов."},
             {"role": "user", "content": f"Тема: {topic}"}
@@ -75,18 +76,22 @@ def generate_text(topic):
         "temperature": 0.8
     }
     try:
-        print("   🔤 Отправка запроса к Agnes (таймаут 120 сек)...", flush=True)
-        resp = requests.post(f"{AGNES_BASE_URL}/chat/completions", headers=headers, json=data, timeout=120)
+        print("   🔤 Отправка запроса к GigaChat...", flush=True)
+        resp = requests.post(GIGACHAT_URL, headers=headers, json=data, timeout=60)
         print(f"   🔤 Ответ получен, статус: {resp.status_code}", flush=True)
         resp.raise_for_status()
-        return resp.json()['choices'][0]['message']['content']
+        result = resp.json()
+        return result['choices'][0]['message']['content']
     except requests.exceptions.Timeout:
-        print("   ❌ Таймаут при запросе к Agnes (120 сек истекли)", flush=True)
+        print("   ❌ Таймаут при запросе к GigaChat", flush=True)
         return None
     except Exception as e:
-        print(f"   ❌ Ошибка генерации текста: {e}", flush=True)
+        print(f"   ❌ Ошибка GigaChat: {e}", flush=True)
+        if hasattr(e, 'response') and e.response:
+            print(f"   📄 Ответ сервера: {e.response.text[:200]}", flush=True)
         return None
 
+# ===== Загрузка медиа =====
 def download_media(url):
     try:
         resp = requests.get(url, stream=True, timeout=60)
@@ -182,7 +187,7 @@ def run_bot():
                 if msg.lower() == 'привет':
                     vk_session.method('messages.send', {
                         'user_id': user_id,
-                        'message': 'Привет! Я бот-менеджер.\nКоманда: пост в "Название" на тему "..." [с фото/видео ссылка] через X минут',
+                        'message': 'Привет! Я бот-менеджер (GigaChat).\nКоманда: пост в "Название" на тему "..." [с фото/видео ссылка] через X минут',
                         'random_id': 0
                     })
                     continue
