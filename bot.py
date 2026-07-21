@@ -12,7 +12,7 @@ from telebot import apihelper
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ============================================================
-#  HTTP-СЕРВЕР ДЛЯ HEALTH CHECK (чтобы Ботхост не ругался)
+#  HTTP-СЕРВЕР ДЛЯ HEALTH CHECK
 # ============================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -21,13 +21,12 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
     
     def log_message(self, format, *args):
-        pass  # отключаем логи сервера
+        pass
 
 def run_health_server():
     server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
     server.serve_forever()
 
-# Запускаем health-сервер в отдельном потоке
 health_thread = threading.Thread(target=run_health_server, daemon=True)
 health_thread.start()
 print("🟢 Health-сервер запущен на порту 8080", flush=True)
@@ -80,13 +79,19 @@ except Exception as e:
     print(f"❌ Ошибка инициализации бота: {e}", flush=True)
     sys.exit(1)
 
+# ===== УДАЛЯЕМ ВЕБХУК (чтобы точно работал polling) =====
+try:
+    bot.remove_webhook()
+    print("✅ Вебхук удалён (если был)", flush=True)
+except Exception as e:
+    print(f"⚠️ Ошибка удаления вебхука: {e}", flush=True)
+
 # ===== ПРОВЕРКА ПОДКЛЮЧЕНИЯ К TELEGRAM =====
 try:
     bot_info = bot.get_me()
     print(f"✅ Подключение к Telegram установлено, бот: @{bot_info.username}", flush=True)
 except Exception as e:
     print(f"❌ Не удалось подключиться к Telegram: {e}", flush=True)
-    print("Проверьте токен BOT_TOKEN и доступ к api.telegram.org", flush=True)
     sys.exit(1)
 
 SCHEDULE_FILE = "schedule.json"
@@ -286,6 +291,7 @@ def scheduler_loop():
 # ================ ОБРАБОТЧИКИ КОМАНД ================
 @bot.message_handler(commands=['start'])
 def start(message):
+    print(f"📩 Получена команда /start от {message.chat.id}", flush=True)
     bot.reply_to(message,
         "👋 Бот для генерации рекламных постов.\n"
         "/post_in ниша тема минуты — пост через N минут\n"
@@ -298,6 +304,7 @@ def start(message):
 
 @bot.message_handler(commands=['post_in'])
 def post_in(message):
+    print(f"📩 Получена команда /post_in от {message.chat.id}: {message.text}", flush=True)
     text = message.text.replace("/post_in", "").strip()
     match = re.search(r'(\d+)$', text)
     if not match:
@@ -324,6 +331,7 @@ def post_in(message):
 
 @bot.message_handler(commands=['add'])
 def add_post(message):
+    print(f"📩 Получена команда /add от {message.chat.id}: {message.text}", flush=True)
     args = message.text.split(maxsplit=4)
     if len(args) < 5:
         bot.reply_to(message, "❌ Формат: /add ниша тема ГГГГ-ММ-ДД ЧЧ:ММ\nНапример: /add ai Нейросети 2026-07-21 13:05")
@@ -349,6 +357,7 @@ def add_post(message):
 
 @bot.message_handler(commands=['list'])
 def list_posts(message):
+    print(f"📩 Получена команда /list от {message.chat.id}", flush=True)
     schedule = load_schedule()
     if not schedule:
         bot.reply_to(message, "📭 Нет запланированных постов")
@@ -361,6 +370,7 @@ def list_posts(message):
 
 @bot.message_handler(commands=['remove'])
 def remove_post(message):
+    print(f"📩 Получена команда /remove от {message.chat.id}: {message.text}", flush=True)
     parts = message.text.split()
     if len(parts) < 2:
         bot.reply_to(message, "❌ Укажи ID поста: /remove 123456")
@@ -376,6 +386,7 @@ def remove_post(message):
 
 @bot.message_handler(commands=['help'])
 def help_command(message):
+    print(f"📩 Получена команда /help от {message.chat.id}", flush=True)
     bot.reply_to(message,
         "📌 Команды:\n"
         "/post_in ниша тема минуты — пост через N минут\n"
