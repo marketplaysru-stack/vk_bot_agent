@@ -602,13 +602,24 @@ def get_updates(offset):
 if __name__ == "__main__":
     log("🤖 Бот запущен...")
 
-    # ДОБАВЛЯЕМ АВТОМАТИЧЕСКОЕ ТЕСТОВОЕ ЗАДАНИЕ, ЕСЛИ РАСПИСАНИЕ ПУСТОЕ
+    # ПРИНУДИТЕЛЬНОЕ СОЗДАНИЕ ТЕСТОВОГО ЗАДАНИЯ
+    log("🧪 Создаю тестовое задание...")
     schedule = load_schedule()
+    # Если расписание пустое или нет заданий, добавляем
     if not schedule:
         test_time = (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")
         schedule.append({"id": "auto_test", "niche": "ai", "topic": "Автоматический тестовый пост", "time": test_time, "done": False})
         save_schedule(schedule)
         log(f"🧪 Добавлено тестовое задание на {test_time} в группу ai")
+    else:
+        # Если есть задания, но ни одно не запланировано на будущее, добавим тестовое через минуту
+        now = datetime.now()
+        has_future = any(datetime.strptime(item["time"], "%Y-%m-%d %H:%M") > now for item in schedule if not item.get("done"))
+        if not has_future:
+            test_time = (now + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")
+            schedule.append({"id": "auto_test_2", "niche": "ai", "topic": "Автоматический тестовый пост 2", "time": test_time, "done": False})
+            save_schedule(schedule)
+            log(f"🧪 Добавлено тестовое задание на {test_time} в группу ai (так как нет будущих)")
 
     threading.Thread(target=scheduler_loop, daemon=True).start()
     update_id = 0
