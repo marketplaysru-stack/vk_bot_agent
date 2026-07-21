@@ -15,7 +15,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # ===== ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ =====
 sys.stdout.reconfigure(line_buffering=True)
 
-# ===== НАСТРОЙКА ЛОГГИРОВАНИЯ (файл + консоль) =====
+# ===== НАСТРОЙКА ЛОГГИРОВАНИЯ =====
 DATA_DIR = "/data"
 os.makedirs(DATA_DIR, exist_ok=True)
 LOG_FILE = os.path.join(DATA_DIR, "bot_ai.log")
@@ -43,7 +43,6 @@ AGNES_API_KEY = os.getenv("AGNES_API_KEY")
 GIGACHAT_API_KEY = os.getenv("GIGACHAT_API_KEY")
 PORT = int(os.getenv("PORT", 8080))
 
-# Проверка обязательных переменных
 if not BOT_TOKEN:
     log("❌ BOT_TOKEN не задан")
     sys.exit(1)
@@ -61,10 +60,9 @@ except ValueError:
 if not AGNES_API_KEY:
     log("⚠️ AGNES_API_KEY не задан (картинки через Pollinations)")
 
-log("🚀 Запуск бота для AI-навигатора (гиперреалистичные промпты)")
+log("🚀 Запуск бота для AI-навигатора (рекламные иконки, без текста)")
 log(f"📌 Группа ID: {VK_GROUP_ID}")
 
-# ===== ПУТЬ К ФАЙЛУ РАСПИСАНИЯ =====
 SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
 log(f"📂 Файл расписания: {SCHEDULE_FILE}")
 
@@ -85,7 +83,7 @@ health_thread = threading.Thread(target=run_health_server, daemon=True)
 health_thread.start()
 log(f"🟢 Health-сервер запущен (порт {PORT})")
 
-# ===== ПРОВЕРКА ПОДКЛЮЧЕНИЯ К TELEGRAM =====
+# ===== ПРОВЕРКА TELEGRAM =====
 try:
     r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=10)
     if r.status_code == 200:
@@ -104,7 +102,7 @@ try:
 except Exception as e:
     log(f"⚠️ Ошибка удаления вебхука: {e}")
 
-# ===== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ RETRY =====
+# ===== RETRY =====
 def retry_call(func, *args, max_retries=3, delay=2, backoff=2, **kwargs):
     last_exception = None
     for attempt in range(max_retries):
@@ -152,7 +150,7 @@ def save_schedule(schedule):
     except Exception as e:
         log(f"⚠️ Ошибка сохранения: {e}")
 
-# ===== ГЕНЕРАЦИЯ ТЕКСТА (без изменений) =====
+# ===== ГЕНЕРАЦИЯ ТЕКСТА =====
 def generate_post_text(topic):
     log(f"🔤 Генерация текста для темы: {topic}")
     system_prompt = (
@@ -192,35 +190,39 @@ def generate_post_text(topic):
         return None
 
 # ============================================================
-# ===== УЛУЧШЕННАЯ ГЕНЕРАЦИЯ КАРТИНОК (ГИПЕРРЕАЛИЗМ) =====
+# ===== УЛУЧШЕННЫЙ ПРОМПТ ДЛЯ КАРТИНОК (без текста, с иконками) =====
 # ============================================================
 
 def build_image_prompt(topic):
     """
-    Формирует высокодетализированный кинематографический промпт,
-    адаптированный под тему поста, с акцентом на фотореализм, драматическое освещение,
-    профессиональный стиль, без текста.
+    Формирует высокодетализированный промпт:
+    - запрещает любой текст/надписи
+    - разрешает рекламные иконки, логотипы, геометрические элементы
+    - фотореализм, кинематографическое освещение, 8K
     """
     base = (
         f"Hyperrealistic cinematic photograph, square 1:1 format, {topic}. "
-        "Professionally styled composition, dramatic lighting with high contrast, "
+        "No text, no typography, no words, no letters, no numbers on the image. "
+        "May include stylized icons, logos, geometric shapes, abstract patterns, "
+        "branding elements, arrows, badges, or graphic overlays for visual appeal. "
+        "Professionally styled composition, dramatic high-contrast lighting, "
         "cinematic color grading (rich reds, deep blues, warm golden highlights), "
         "shallow depth of field, sharp focus on the main subject, "
-        "ultra-detailed textures (skin pores, fabric weaves, reflections), "
-        "8K resolution, photorealistic, no text or typography, "
-        "editorial quality, reminiscent of high-end fashion or product photography, "
+        "ultra-detailed textures (skin pores, fabric weaves, reflections, materials), "
+        "8K resolution, photorealistic, editorial quality, "
+        "reminiscent of high-end advertising or fashion photography, "
         "emotionally compelling, vibrant yet natural colors, "
-        "background softly blurred, spotlight effect, "
+        "background softly blurred with bokeh, spotlight effect, "
         "modern aesthetic, perfect for social media cover, "
         "professional retouching, no plastic or artificial look, "
         "captured with Hasselblad H6D, 100mm lens, f/2.8, "
         "natural motion frozen, dynamic energy, "
-        "atmospheric haze, subtle lens flare."
+        "atmospheric haze, subtle lens flare, volumetric light."
     )
     return base
 
 def generate_image_agnes(prompt):
-    log("   🖼️ Попытка Agnes (гиперреалистичный промпт)...")
+    log("   🖼️ Попытка Agnes (улучшенный промпт)...")
     if not AGNES_API_KEY:
         log("   AGNES_API_KEY не задан")
         return None
@@ -253,7 +255,7 @@ def generate_image_agnes(prompt):
         return None
 
 def generate_image_gigachat(prompt):
-    log("   🖼️ Попытка GigaChat (гиперреалистичный промпт)...")
+    log("   🖼️ Попытка GigaChat (улучшенный промпт)...")
     if not GIGACHAT_API_KEY:
         log("   GIGACHAT_API_KEY не задан")
         return None
@@ -289,10 +291,9 @@ def generate_image_gigachat(prompt):
         return None
 
 def generate_image_pollinations(prompt):
-    log("   🖼️ Попытка Pollinations (гиперреалистичный промпт)...")
+    log("   🖼️ Попытка Pollinations (улучшенный промпт)...")
     try:
         prompt_encoded = urllib.parse.quote(prompt)
-        # Добавляем параметры для повышения качества (если поддерживаются)
         url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
         log("   ✅ URL сформирован")
         return url
@@ -301,11 +302,10 @@ def generate_image_pollinations(prompt):
         return None
 
 def generate_image(topic):
-    log(f"🖼️ Генерация гиперреалистичной картинки для темы: {topic}")
+    log(f"🖼️ Генерация картинки для темы: {topic}")
     prompt = build_image_prompt(topic)
     log(f"   Промпт: {prompt[:200]}...")
 
-    # Цепочка источников
     url = generate_image_agnes(prompt)
     if url:
         return url
@@ -318,7 +318,7 @@ def generate_image(topic):
     log("❌ Все источники картинок недоступны")
     return None
 
-# ===== СКАЧИВАНИЕ КАРТИНКИ (с проверкой) =====
+# ===== СКАЧИВАНИЕ КАРТИНКИ =====
 def download_image(url):
     log(f"📥 Скачивание картинки: {url[:60]}...")
     def _do():
@@ -326,7 +326,6 @@ def download_image(url):
         if response.status_code != 200:
             raise Exception(f"HTTP {response.status_code}")
         content = response.content
-        # Проверяем, что это не HTML (признак ошибки Pollinations)
         if b"<html" in content[:100] or b"<!DOCTYPE" in content[:100]:
             raise Exception("Получен HTML вместо изображения")
         if len(content) < 100:
@@ -340,7 +339,7 @@ def download_image(url):
         log(f"   ❌ Скачивание провалилось: {e}")
         return None
 
-# ===== ПУБЛИКАЦИЯ В VK (без изменений) =====
+# ===== ПУБЛИКАЦИЯ В VK =====
 def vk_api_request(method, params, token, retries=3):
     base_url = "https://api.vk.com/method/"
     params = params.copy()
@@ -478,7 +477,7 @@ def execute_scheduled_post(item):
         return
     log(f"✅ Текст получен, длина {len(post_text)}")
 
-    log("🖼️ Шаг 2: Генерация гиперреалистичной картинки...")
+    log("🖼️ Шаг 2: Генерация картинки (без текста, с иконками)...")
     image_url = generate_image(topic)
     image_bytes = None
     if image_url:
@@ -524,7 +523,7 @@ def scheduler_loop():
             traceback.print_exc(file=sys.stdout)
         time.sleep(30)
 
-# ===== ОБРАБОТЧИКИ КОМАНД TELEGRAM =====
+# ===== ОБРАБОТЧИКИ КОМАНД =====
 def process_message(message):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
@@ -533,7 +532,7 @@ def process_message(message):
     if text.startswith("/start"):
         send_message(chat_id,
             "👋 Бот для автопостинга в AI-навигатор.\n"
-            "Генерация гиперреалистичных картинок.\n"
+            "🎨 Картинки: без текста, с рекламными иконками.\n"
             "/post_in тема минуты — добавить пост через N минут\n"
             "/run_now тема — опубликовать прямо сейчас\n"
             "/list — показать все задания\n"
@@ -635,7 +634,7 @@ def get_updates(offset):
         log(f"⚠️ getUpdates исключение: {e}")
     return []
 
-# ===== ДОБАВЛЕНИЕ ТЕСТОВОГО ПОСТА =====
+# ===== ТЕСТОВЫЙ ПОСТ =====
 def add_test_post_if_empty():
     schedule = load_schedule()
     has_ai = any(item.get("niche") == "ai" for item in schedule)
@@ -645,7 +644,7 @@ def add_test_post_if_empty():
         schedule.append({
             "id": f"test_ai_{int(time.time())}",
             "niche": "ai",
-            "topic": "Гиперреалистичный тест: брендинг и маркетинг",
+            "topic": "Современный брендинг и рекламные иконки в дизайне",
             "time": test_time,
             "done": False
         })
@@ -654,7 +653,7 @@ def add_test_post_if_empty():
 
 # ===== ГЛАВНЫЙ ЦИКЛ =====
 if __name__ == "__main__":
-    log("🤖 Бот для AI-навигатора (гиперреалистичные картинки) запущен")
+    log("🤖 Бот для AI-навигатора (рекламные иконки, без текста) запущен")
     add_test_post_if_empty()
     threading.Thread(target=scheduler_loop, daemon=True).start()
     update_id = 0
