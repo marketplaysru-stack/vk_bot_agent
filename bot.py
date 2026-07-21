@@ -38,7 +38,7 @@ def log(msg):
 # ===== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 VK_TOKEN = os.getenv("VK_TOKEN_AI")          # Токен для AI-группы
-VK_GROUP_ID = os.getenv("VK_GROUP_ID_AI")    # ID AI-группы (должен быть -240273450)
+VK_GROUP_ID = os.getenv("VK_GROUP_ID_AI")    # ID AI-группы
 AGNES_API_KEY = os.getenv("AGNES_API_KEY")
 GIGACHAT_API_KEY = os.getenv("GIGACHAT_API_KEY")
 PORT = int(os.getenv("PORT", 8080))
@@ -98,7 +98,6 @@ except Exception as e:
     log(f"❌ Не удалось подключиться к Telegram: {e}")
     sys.exit(1)
 
-# Удаляем вебхук
 try:
     requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", timeout=10)
     log("✅ Вебхук удалён")
@@ -154,9 +153,8 @@ def save_schedule(schedule):
         log(f"⚠️ Ошибка сохранения: {e}")
 
 # ===== ГЕНЕРАЦИЯ ТЕКСТА =====
-def generate_post_text(niche, topic):
-    # niche здесь всегда "ai", но оставим параметр для совместимости
-    log(f"🔤 Генерация текста для {topic}")
+def generate_post_text(topic):
+    log(f"🔤 Генерация текста для темы: {topic}")
     system_prompt = (
         "Ты — профессиональный SMM-менеджер и копирайтер. "
         "Напиши яркий, вовлекающий пост для ВКонтакте по заданной теме. "
@@ -193,7 +191,7 @@ def generate_post_text(niche, topic):
         log(f"   ❌ Генерация текста провалилась: {e}")
         return None
 
-# ===== ГЕНЕРАЦИЯ КАРТИНКИ =====
+# ===== ГЕНЕРАЦИЯ КАРТИНКИ (с резервом) =====
 def generate_image_agnes(prompt):
     log("   🖼️ Попытка Agnes...")
     if not AGNES_API_KEY:
@@ -280,6 +278,7 @@ def generate_image(topic):
         f"Иллюстрация к посту на тему: {topic}. "
         "Яркие цвета, современный стиль, 1:1, без текста."
     )
+    # Попробовать источники по порядку
     url = generate_image_agnes(prompt)
     if url:
         return url
@@ -298,9 +297,13 @@ def download_image(url):
         response = requests.get(url, timeout=60)
         if response.status_code != 200:
             raise Exception(f"HTTP {response.status_code}")
-        if len(response.content) < 100:
+        content = response.content
+        # Проверяем, что это не HTML (признак ошибки Pollinations)
+        if b"<html" in content[:100] or b"<!DOCTYPE" in content[:100]:
+            raise Exception("Получен HTML вместо изображения")
+        if len(content) < 100:
             raise Exception("Слишком маленький ответ")
-        return response.content
+        return content
     try:
         content = retry_call(_do, max_retries=3, delay=2, backoff=2)
         log(f"   Успешно, размер {len(content)} байт")
@@ -309,7 +312,7 @@ def download_image(url):
         log(f"   ❌ Скачивание провалилось: {e}")
         return None
 
-# ===== ПУБЛИКАЦИЯ В VK =====
+# ===== ПУБЛИКАЦИЯ В VK (с подробным логированием) =====
 def vk_api_request(method, params, token, retries=3):
     base_url = "https://api.vk.com/method/"
     params = params.copy()
@@ -331,27 +334,38 @@ def vk_api_request(method, params, token, retries=3):
         return None
 
 def post_to_vk(image_bytes, text):
-    log(f"📤 Публикация в AI-группу (ID {VK_GROUP_ID})")
+    log(f"📤 Начало публикации в AI-группу (ID {VK_GROUP_ID})")
     group_id = VK_GROUP_ID
     token = VK_TOKEN
 
+    # Если картинка не передана – публикуем текст
     if image_bytes is None:
         log("   Публикация без фото (только текст)")
         result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
         if result is None:
+            log("   ❌ Не удалось опубликовать текст")
             return False, "Ошибка публикации текста"
         log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
         return True, None
 
+    log("   Публикация с фото")
     try:
-        # Получение upload_url
+        # Шаг 1: Получение upload_url
+        log("   Шаг 1: Получение upload_url...")
         upload_resp = vk_api_request("photos.getWallUploadServer", {"group_id": abs(group_id)}, token=token, retries=3)
         if upload_resp is None:
-            return False, "Не удалось получить upload_url"
+            log("   ❌ Не удалось получить upload_url, публикуем без фото")
+            # Пробуем без фото
+            result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
+            if result is None:
+                return False, "Ошибка публикации после падения upload_url"
+            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
+            return True, None
         upload_url = upload_resp["upload_url"]
         log(f"   upload_url получен: {upload_url[:50]}...")
 
-        # Загрузка фото
+        # Шаг 2: Загрузка фото
+        log("   Шаг 2: Загрузка фото...")
         def _upload():
             files = {"photo": ("image.jpg", image_bytes, "image/jpeg")}
             resp = requests.post(upload_url, files=files, timeout=60)
@@ -367,9 +381,18 @@ def post_to_vk(image_bytes, text):
                 raise Exception("photo пустое или '[]'")
             return data
 
-        up = retry_call(_upload, max_retries=3, delay=2, backoff=2)
+        try:
+            up = retry_call(_upload, max_retries=3, delay=2, backoff=2)
+        except Exception as e:
+            log(f"   ❌ Ошибка загрузки фото: {e}, публикуем без фото")
+            result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
+            if result is None:
+                return False, "Ошибка публикации после падения загрузки фото"
+            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
+            return True, None
 
-        # Сохранение фото
+        # Шаг 3: Сохранение фото на стене
+        log("   Шаг 3: Сохранение фото на стене...")
         save_params = {
             "group_id": abs(group_id),
             "server": up["server"],
@@ -378,12 +401,19 @@ def post_to_vk(image_bytes, text):
         }
         save_resp = vk_api_request("photos.saveWallPhoto", save_params, token=token, retries=3)
         if save_resp is None:
-            return False, "Ошибка сохранения фото"
+            log("   ❌ Ошибка сохранения фото, публикуем без фото")
+            result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
+            if result is None:
+                return False, "Ошибка публикации после падения сохранения фото"
+            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
+            return True, None
+
         photo = save_resp[0]
         attachment = f"photo{photo['owner_id']}_{photo['id']}"
         log(f"   Фото сохранено, attachment: {attachment}")
 
-        # Публикация поста
+        # Шаг 4: Публикация поста с фото
+        log("   Шаг 4: Публикация поста с фото...")
         post_params = {
             "owner_id": group_id,
             "message": text,
@@ -392,12 +422,27 @@ def post_to_vk(image_bytes, text):
         }
         post_resp = vk_api_request("wall.post", post_params, token=token, retries=3)
         if post_resp is None:
-            return False, "Ошибка публикации поста"
-        log(f"✅ Пост опубликован в группе {group_id}, ID: {post_resp['post_id']}")
+            log("   ❌ Ошибка публикации с фото, пробуем без фото")
+            result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
+            if result is None:
+                return False, "Ошибка публикации после падения с фото"
+            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
+            return True, None
+
+        log(f"✅ Пост опубликован с фото в группе {group_id}, ID: {post_resp['post_id']}")
         return True, None
+
     except Exception as e:
         log(f"   Исключение в post_to_vk: {e}")
         traceback.print_exc(file=sys.stdout)
+        # Последняя попытка – текст без фото
+        try:
+            result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
+            if result is not None:
+                log(f"✅ Пост опубликован (без фото) после исключения, ID: {result['post_id']}")
+                return True, None
+        except:
+            pass
         return False, f"Исключение: {str(e)}"
 
 # ===== ВЫПОЛНЕНИЕ ЗАПЛАНИРОВАННОГО ПОСТА =====
@@ -407,7 +452,7 @@ def execute_scheduled_post(item):
     log(f"📢 Публикую запланированный пост: '{topic}' в {time_str}")
 
     log("🔤 Шаг 1: Генерация текста...")
-    post_text = generate_post_text("ai", topic)
+    post_text = generate_post_text(topic)
     if not post_text:
         log("❌ Текст не сгенерирован, пропускаем пост")
         return
@@ -446,7 +491,13 @@ def scheduler_loop():
                 log("📭 Расписание пустое")
             else:
                 for item in schedule:
+                    # Для AI-бота обрабатываем все посты (без проверки по niche, т.к. мы отдельный экземпляр)
+                    # Если же хотим фильтровать, можно добавить проверку, но пока оставим все
                     if item["time"] == now and not item.get("done", False):
+                        # Пропускаем, если есть niche и она не равна "ai" (для совместимости с общим файлом)
+                        if item.get("niche") and item["niche"] != "ai":
+                            log(f"⏭️ Пропускаем задание для {item.get('niche')}")
+                            continue
                         log(f"📢 Найдено задание: {item['topic']} в {item['time']}")
                         execute_scheduled_post(item)
                         item["done"] = True
@@ -480,7 +531,7 @@ def process_message(message):
         send_message(chat_id, f"⏳ Начинаю публикацию: '{topic}'...")
         def publish():
             log(f"📢 Ручная публикация: {topic}")
-            post_text = generate_post_text("ai", topic)
+            post_text = generate_post_text(topic)
             if not post_text:
                 send_message(chat_id, "❌ Не удалось сгенерировать текст")
                 return
@@ -511,7 +562,7 @@ def process_message(message):
         full_time = publish_time.strftime("%Y-%m-%d %H:%M")
         schedule = load_schedule()
         new_id = str(int(time.time()))
-        schedule.append({"id": new_id, "topic": topic, "time": full_time, "done": False})
+        schedule.append({"id": new_id, "topic": topic, "time": full_time, "done": False, "niche": "ai"})
         save_schedule(schedule)
         send_message(chat_id, f"✅ Пост добавлен: '{topic}' в {full_time}")
         return
@@ -524,7 +575,8 @@ def process_message(message):
             lines = []
             for item in schedule:
                 status = "✅" if item.get("done") else "⏳"
-                lines.append(f"{status} ID:{item['id']} {item['topic']} -> {item['time']}")
+                niche_info = f"[{item.get('niche', 'ai')}] "
+                lines.append(f"{status} {niche_info}ID:{item['id']} {item['topic']} -> {item['time']}")
             send_message(chat_id, "\n".join(lines[:10]))
         return
 
@@ -568,11 +620,14 @@ def get_updates(offset):
 # ===== ДОБАВЛЕНИЕ ТЕСТОВОГО ПОСТА ПРИ ПЕРВОМ ЗАПУСКЕ =====
 def add_test_post_if_empty():
     schedule = load_schedule()
-    if not schedule:
-        log("🧪 Расписание пустое, добавляем тестовый пост через 2 минуты")
+    # Проверяем, есть ли уже посты для AI
+    has_ai = any(item.get("niche") == "ai" for item in schedule)
+    if not has_ai:
+        log("🧪 Добавляем тестовый пост для AI через 2 минуты")
         test_time = (datetime.now() + timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M")
         schedule.append({
-            "id": f"test_{int(time.time())}",
+            "id": f"test_ai_{int(time.time())}",
+            "niche": "ai",
             "topic": "Тестовый пост для AI-навигатора (автоматический)",
             "time": test_time,
             "done": False
