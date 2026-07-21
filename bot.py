@@ -35,32 +35,36 @@ logger.addHandler(console_handler)
 def log(msg):
     logging.info(msg)
 
-# ===== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ (индивидуальные для этой группы) =====
-VK_TOKEN = os.getenv("VK_TOKEN")
-VK_GROUP_ID = os.getenv("VK_GROUP_ID")
-MY_NICHE = os.getenv("MY_NICHE", "ai").lower()  # по умолчанию "ai"
+# ===== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ =====
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+VK_TOKEN = os.getenv("VK_TOKEN_AI")          # Токен для AI-группы
+VK_GROUP_ID = os.getenv("VK_GROUP_ID_AI")    # ID AI-группы (должен быть -240273450)
 AGNES_API_KEY = os.getenv("AGNES_API_KEY")
 GIGACHAT_API_KEY = os.getenv("GIGACHAT_API_KEY")
-PORT = int(os.getenv("PORT", 8080))  # порт для health-сервера
+PORT = int(os.getenv("PORT", 8080))
 
 # Проверка обязательных переменных
+if not BOT_TOKEN:
+    log("❌ BOT_TOKEN не задан")
+    sys.exit(1)
 if not VK_TOKEN:
-    log("❌ VK_TOKEN не задан")
+    log("❌ VK_TOKEN_AI не задан")
     sys.exit(1)
 if not VK_GROUP_ID:
-    log("❌ VK_GROUP_ID не задан")
+    log("❌ VK_GROUP_ID_AI не задан")
     sys.exit(1)
 try:
     VK_GROUP_ID = int(VK_GROUP_ID)
 except ValueError:
-    log(f"❌ VK_GROUP_ID должен быть числом, получено: {VK_GROUP_ID}")
+    log(f"❌ VK_GROUP_ID_AI должен быть числом, получено: {VK_GROUP_ID}")
     sys.exit(1)
 if not AGNES_API_KEY:
     log("⚠️ AGNES_API_KEY не задан (картинки через Pollinations)")
 
-log(f"🚀 Запуск исполнителя для ниши '{MY_NICHE}', группа ID {VK_GROUP_ID}")
+log("🚀 Запуск бота для AI-навигатора")
+log(f"📌 Группа ID: {VK_GROUP_ID}")
 
-# ===== ПУТЬ К ОБЩЕМУ ФАЙЛУ РАСПИСАНИЯ =====
+# ===== ПУТЬ К ФАЙЛУ РАСПИСАНИЯ =====
 SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
 log(f"📂 Файл расписания: {SCHEDULE_FILE}")
 
@@ -80,6 +84,26 @@ def run_health_server():
 health_thread = threading.Thread(target=run_health_server, daemon=True)
 health_thread.start()
 log(f"🟢 Health-сервер запущен (порт {PORT})")
+
+# ===== ПРОВЕРКА ПОДКЛЮЧЕНИЯ К TELEGRAM =====
+try:
+    r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=10)
+    if r.status_code == 200:
+        bot_info = r.json()["result"]
+        log(f"✅ Подключение к Telegram: @{bot_info['username']}")
+    else:
+        log(f"❌ Ошибка доступа к Telegram: {r.status_code}")
+        sys.exit(1)
+except Exception as e:
+    log(f"❌ Не удалось подключиться к Telegram: {e}")
+    sys.exit(1)
+
+# Удаляем вебхук
+try:
+    requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", timeout=10)
+    log("✅ Вебхук удалён")
+except Exception as e:
+    log(f"⚠️ Ошибка удаления вебхука: {e}")
 
 # ===== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ RETRY =====
 def retry_call(func, *args, max_retries=3, delay=2, backoff=2, **kwargs):
@@ -114,7 +138,8 @@ def load_schedule():
                 log(f"📂 Загружено {len(data)} записей из {SCHEDULE_FILE}")
                 return data
         else:
-            log(f"📂 Файл {SCHEDULE_FILE} не найден")
+            log(f"📂 Файл {SCHEDULE_FILE} не найден, создаём новый")
+            save_schedule([])
             return []
     except Exception as e:
         log(f"⚠️ Ошибка загрузки: {e}")
@@ -130,15 +155,16 @@ def save_schedule(schedule):
 
 # ===== ГЕНЕРАЦИЯ ТЕКСТА =====
 def generate_post_text(niche, topic):
-    log(f"🔤 Генерация текста для {niche}: {topic}")
+    # niche здесь всегда "ai", но оставим параметр для совместимости
+    log(f"🔤 Генерация текста для {topic}")
     system_prompt = (
         "Ты — профессиональный SMM-менеджер и копирайтер. "
-        "Напиши яркий, вовлекающий пост для ВКонтакте по заданной теме и нише. "
+        "Напиши яркий, вовлекающий пост для ВКонтакте по заданной теме. "
         "Пост должен быть продающим, полезным и побуждать к действию. "
         "Используй структуру: цепляющий заголовок (до 10 слов) → проблема аудитории → решение → практическая польза → призыв к действию. "
         "Добавь эмодзи, разбей на короткие абзацы. В конце добавь 5 хештегов. Пиши человечно, без канцелярита."
     )
-    user_prompt = f"Ниша: {niche}\nТема: {topic}"
+    user_prompt = f"Тема: {topic}"
     headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
     data = {
         "model": "agnes-2.0-flash",
@@ -248,8 +274,8 @@ def generate_image_pollinations(prompt):
         log(f"   ❌ Pollinations исключение: {e}")
         return None
 
-def generate_image(niche, topic):
-    log(f"🖼️ Генерация картинки для {niche}: {topic}")
+def generate_image(topic):
+    log(f"🖼️ Генерация картинки для темы: {topic}")
     prompt = (
         f"Иллюстрация к посту на тему: {topic}. "
         "Яркие цвета, современный стиль, 1:1, без текста."
@@ -304,12 +330,8 @@ def vk_api_request(method, params, token, retries=3):
         log(f"   ❌ Ошибка VK API ({method}): {e}")
         return None
 
-def post_to_vk(niche, image_bytes, text):
-    log(f"📤 Публикация в {niche}")
-    if niche != MY_NICHE:
-        log(f"   ⚠️ Задание для другой ниши ({niche}), пропускаем")
-        return False, "Не моя ниша"
-
+def post_to_vk(image_bytes, text):
+    log(f"📤 Публикация в AI-группу (ID {VK_GROUP_ID})")
     group_id = VK_GROUP_ID
     token = VK_TOKEN
 
@@ -380,24 +402,19 @@ def post_to_vk(niche, image_bytes, text):
 
 # ===== ВЫПОЛНЕНИЕ ЗАПЛАНИРОВАННОГО ПОСТА =====
 def execute_scheduled_post(item):
-    if item["niche"] != MY_NICHE:
-        log(f"⏭️ Пропускаем задание для другой ниши: {item['niche']}")
-        return
-
-    niche = item["niche"]
     topic = item["topic"]
     time_str = item["time"]
-    log(f"📢 Публикую запланированный пост: '{topic}' в {time_str} (ниша: {niche})")
+    log(f"📢 Публикую запланированный пост: '{topic}' в {time_str}")
 
     log("🔤 Шаг 1: Генерация текста...")
-    post_text = generate_post_text(niche, topic)
+    post_text = generate_post_text("ai", topic)
     if not post_text:
         log("❌ Текст не сгенерирован, пропускаем пост")
         return
     log(f"✅ Текст получен, длина {len(post_text)}")
 
     log("🖼️ Шаг 2: Генерация картинки...")
-    image_url = generate_image(niche, topic)
+    image_url = generate_image(topic)
     image_bytes = None
     if image_url:
         log(f"✅ URL картинки: {image_url[:60]}...")
@@ -411,7 +428,7 @@ def execute_scheduled_post(item):
         log("⚠️ Картинка не сгенерирована, публикуем без фото")
 
     log("📤 Шаг 4: Публикация в VK...")
-    success, error = post_to_vk(niche, image_bytes, post_text)
+    success, error = post_to_vk(image_bytes, post_text)
     if success:
         log("✅ Пост успешно опубликован!")
     else:
@@ -428,9 +445,8 @@ def scheduler_loop():
             if not schedule:
                 log("📭 Расписание пустое")
             else:
-                # Ищем задания для нашей ниши
                 for item in schedule:
-                    if item["time"] == now and not item.get("done", False) and item["niche"] == MY_NICHE:
+                    if item["time"] == now and not item.get("done", False):
                         log(f"📢 Найдено задание: {item['topic']} в {item['time']}")
                         execute_scheduled_post(item)
                         item["done"] = True
@@ -440,24 +456,140 @@ def scheduler_loop():
             traceback.print_exc(file=sys.stdout)
         time.sleep(30)
 
-# ===== ЗАПУСК =====
-if __name__ == "__main__":
-    log(f"🤖 Бот-исполнитель для ниши '{MY_NICHE}' запущен")
-    # Добавляем тестовое задание, если расписание пустое (для проверки)
+# ===== ОБРАБОТЧИКИ КОМАНД TELEGRAM =====
+def process_message(message):
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "").strip()
+    log(f"📩 Получено: {text}")
+
+    if text.startswith("/start"):
+        send_message(chat_id,
+            "👋 Бот для автопостинга в AI-навигатор.\n"
+            "/post_in тема минуты — добавить пост через N минут\n"
+            "/run_now тема — опубликовать прямо сейчас\n"
+            "/list — показать все задания\n"
+            "/debug — показать содержимое schedule.json"
+        )
+        return
+
+    if text.startswith("/run_now"):
+        topic = text.replace("/run_now", "").strip()
+        if not topic:
+            send_message(chat_id, "❌ Укажи тему поста")
+            return
+        send_message(chat_id, f"⏳ Начинаю публикацию: '{topic}'...")
+        def publish():
+            log(f"📢 Ручная публикация: {topic}")
+            post_text = generate_post_text("ai", topic)
+            if not post_text:
+                send_message(chat_id, "❌ Не удалось сгенерировать текст")
+                return
+            image_url = generate_image(topic)
+            image_bytes = None
+            if image_url:
+                image_bytes = download_image(image_url)
+            success, error = post_to_vk(image_bytes, post_text)
+            if success:
+                send_message(chat_id, f"✅ Пост опубликован!")
+            else:
+                send_message(chat_id, f"❌ Ошибка публикации: {error}")
+        threading.Thread(target=publish).start()
+        return
+
+    if text.startswith("/post_in"):
+        parts = text.replace("/post_in", "").strip()
+        match = re.search(r'(\d+)$', parts)
+        if not match:
+            send_message(chat_id, "❌ Укажи минуты (число в конце)")
+            return
+        minutes = int(match.group(1))
+        topic = parts[:match.start()].strip()
+        if not topic:
+            send_message(chat_id, "❌ Укажи тему поста")
+            return
+        publish_time = datetime.now() + timedelta(minutes=minutes)
+        full_time = publish_time.strftime("%Y-%m-%d %H:%M")
+        schedule = load_schedule()
+        new_id = str(int(time.time()))
+        schedule.append({"id": new_id, "topic": topic, "time": full_time, "done": False})
+        save_schedule(schedule)
+        send_message(chat_id, f"✅ Пост добавлен: '{topic}' в {full_time}")
+        return
+
+    if text.startswith("/list"):
+        schedule = load_schedule()
+        if not schedule:
+            send_message(chat_id, "📭 Нет запланированных постов")
+        else:
+            lines = []
+            for item in schedule:
+                status = "✅" if item.get("done") else "⏳"
+                lines.append(f"{status} ID:{item['id']} {item['topic']} -> {item['time']}")
+            send_message(chat_id, "\n".join(lines[:10]))
+        return
+
+    if text.startswith("/debug"):
+        try:
+            if os.path.exists(SCHEDULE_FILE):
+                with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    send_message(chat_id, f"📄 Содержимое schedule.json:\n{content[:500]}")
+            else:
+                send_message(chat_id, "❌ Файл не найден")
+        except Exception as e:
+            send_message(chat_id, f"❌ Ошибка: {e}")
+        return
+
+def send_message(chat_id, text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        log(f"⚠️ Ошибка отправки: {e}")
+
+# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
+def get_updates(offset):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    params = {"offset": offset, "timeout": 10, "allowed_updates": ["message"]}
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("result"):
+                log(f"📨 Получены обновления: {len(data['result'])} сообщений")
+                return data["result"]
+        else:
+            log(f"⚠️ getUpdates ошибка: {resp.status_code}")
+    except Exception as e:
+        log(f"⚠️ getUpdates исключение: {e}")
+    return []
+
+# ===== ДОБАВЛЕНИЕ ТЕСТОВОГО ПОСТА ПРИ ПЕРВОМ ЗАПУСКЕ =====
+def add_test_post_if_empty():
     schedule = load_schedule()
     if not schedule:
-        test_time = (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")
+        log("🧪 Расписание пустое, добавляем тестовый пост через 2 минуты")
+        test_time = (datetime.now() + timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M")
         schedule.append({
-            "id": f"test_{MY_NICHE}_{int(time.time())}",
-            "niche": MY_NICHE,
-            "topic": f"Тестовый пост для {MY_NICHE}",
+            "id": f"test_{int(time.time())}",
+            "topic": "Тестовый пост для AI-навигатора (автоматический)",
             "time": test_time,
             "done": False
         })
         save_schedule(schedule)
-        log(f"🧪 Добавлено тестовое задание на {test_time}")
+        log(f"🧪 Добавлен тестовый пост на {test_time}")
 
+# ===== ГЛАВНЫЙ ЦИКЛ =====
+if __name__ == "__main__":
+    log("🤖 Бот для AI-навигатора запущен")
+    add_test_post_if_empty()
     threading.Thread(target=scheduler_loop, daemon=True).start()
-    # Бесконечный цикл, чтобы бот не завершался
+    update_id = 0
     while True:
-        time.sleep(60)
+        updates = get_updates(update_id + 1)
+        for upd in updates:
+            update_id = upd["update_id"]
+            if "message" in upd:
+                process_message(upd["message"])
+        time.sleep(0.5)
