@@ -45,11 +45,10 @@ log("🚀 Бот запускается...")
 try:
     BOT_TOKEN = os.getenv("BOT_TOKEN")
     AGNES_API_KEY = os.getenv("AGNES_API_KEY")
-    GIGACHAT_API_KEY = os.getenv("GIGACHAT_API_KEY")
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN не задан")
     if not AGNES_API_KEY:
-        log("⚠️ AGNES_API_KEY не задан, но это не критично (будет использоваться резерв)")
+        raise ValueError("AGNES_API_KEY не задан")
     log("✅ Основные переменные загружены")
 except Exception as e:
     log(f"❌ Ошибка: {e}")
@@ -85,7 +84,7 @@ try:
 except Exception as e:
     log(f"⚠️ Ошибка удаления вебхука: {e}")
 
-# ===== ФУНКЦИИ РАБОТЫ С РАСПИСАНИЕМ =====
+# ===== ФУНКЦИИ =====
 def load_schedule():
     try:
         if os.path.exists(SCHEDULE_FILE):
@@ -109,7 +108,6 @@ def save_schedule(schedule):
     except Exception as e:
         log(f"⚠️ Ошибка сохранения: {e}")
 
-# ===== ГЕНЕРАЦИЯ ТЕКСТА =====
 def generate_post_text(niche, topic):
     log(f"🔤 Генерация текста для {niche}: {topic}")
     system_prompt = (
@@ -149,12 +147,12 @@ def generate_post_text(niche, topic):
         traceback.print_exc(file=sys.stdout)
         return None
 
-# ===== ГЕНЕРАЦИЯ КАРТИНКИ (Agnes -> GigaChat -> Pollinations) =====
-def generate_image_agnes(prompt):
-    log("   🖼️ Попытка Agnes...")
-    if not AGNES_API_KEY:
-        log("   AGNES_API_KEY не задан, пропускаем")
-        return None
+def generate_image(niche, topic):
+    log(f"🖼️ Генерация картинки для {niche}: {topic}")
+    prompt = (
+        f"Иллюстрация к посту на тему: {topic}. "
+        "Яркие цвета, современный стиль, 1:1, без текста."
+    )
     headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
     data = {
         "model": "agnes-image-2.1-flash",
@@ -171,87 +169,21 @@ def generate_image_agnes(prompt):
         )
         if response.status_code == 200:
             url = response.json()["data"][0]["url"]
-            log("   ✅ Agnes успешно")
+            log(f"   URL картинки: {url[:60]}...")
             return url
         else:
-            log(f"   ❌ Agnes ошибка: {response.status_code}")
-            return None
+            log(f"   Ошибка картинки: {response.status_code}")
+            # Резерв Pollinations
+            prompt_encoded = urllib.parse.quote(prompt)
+            fallback = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
+            log(f"   Используем Pollinations: {fallback[:60]}...")
+            return fallback
     except Exception as e:
-        log(f"   ❌ Agnes исключение: {e}")
-        return None
-
-def generate_image_gigachat(prompt):
-    log("   🖼️ Попытка GigaChat...")
-    if not GIGACHAT_API_KEY:
-        log("   GIGACHAT_API_KEY не задан, пропускаем")
-        return None
-    headers = {
-        "Authorization": f"Bearer {GIGACHAT_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "model": "GigaChat-Image",
-        "prompt": prompt,
-        "size": "1024x1024",
-        "n": 1
-    }
-    try:
-        response = requests.post(
-            "https://gigachat.devices.sberbank.ru/api/v1/images/generations",
-            headers=headers,
-            json=data,
-            timeout=120
-        )
-        if response.status_code == 200:
-            url = response.json()["data"][0]["url"]
-            log("   ✅ GigaChat успешно")
-            return url
-        else:
-            log(f"   ❌ GigaChat ошибка: {response.status_code}")
-            return None
-    except Exception as e:
-        log(f"   ❌ GigaChat исключение: {e}")
-        return None
-
-def generate_image_pollinations(prompt):
-    log("   🖼️ Попытка Pollinations...")
-    try:
+        log(f"   Исключение при генерации картинки: {e}")
         prompt_encoded = urllib.parse.quote(prompt)
-        url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
-        # Проверяем доступность (HEAD-запрос)
-        resp = requests.head(url, timeout=10)
-        if resp.status_code == 200:
-            log("   ✅ Pollinations доступен")
-            return url
-        else:
-            log(f"   ❌ Pollinations ошибка: {resp.status_code}")
-            return None
-    except Exception as e:
-        log(f"   ❌ Pollinations исключение: {e}")
-        return None
-
-def generate_image(niche, topic):
-    log(f"🖼️ Генерация картинки для {niche}: {topic}")
-    prompt = (
-        f"Иллюстрация к посту на тему: {topic}. "
-        "Яркие цвета, современный стиль, 1:1, без текста."
-    )
-
-    # Цепочка: Agnes -> GigaChat -> Pollinations
-    url = generate_image_agnes(prompt)
-    if url:
-        return url
-
-    url = generate_image_gigachat(prompt)
-    if url:
-        return url
-
-    url = generate_image_pollinations(prompt)
-    if url:
-        return url
-
-    log("❌ Все источники картинок недоступны")
-    return None
+        fallback = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
+        log(f"   Используем Pollinations: {fallback[:60]}...")
+        return fallback
 
 def download_image(url):
     log(f"📥 Скачивание картинки: {url[:60]}...")
@@ -269,7 +201,6 @@ def download_image(url):
         traceback.print_exc(file=sys.stdout)
         return None
 
-# ===== ПУБЛИКАЦИЯ В VK =====
 def post_to_vk(niche, image_bytes, text):
     log(f"📤 Публикация в {niche}")
     if niche not in VK_ACCOUNTS:
@@ -277,30 +208,8 @@ def post_to_vk(niche, image_bytes, text):
         return False, f"Ниша '{niche}' не найдена"
     vk_token = VK_ACCOUNTS[niche]["token"]
     group_id = VK_ACCOUNTS[niche]["group_id"]
-
-    if image_bytes is None:
-        log("   Публикация без фото (только текст)")
-        try:
-            post = requests.get(
-                "https://api.vk.com/method/wall.post",
-                params={
-                    "owner_id": group_id,
-                    "message": text,
-                    "access_token": vk_token,
-                    "v": "5.131",
-                    "from_group": 1
-                }
-            ).json()
-            if "error" in post:
-                log(f"   Ошибка публикации (текст): {post['error']['error_msg']}")
-                return False, f"Ошибка публикации: {post['error']['error_msg']}"
-            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {post['response']['post_id']}")
-            return True, None
-        except Exception as e:
-            log(f"   Исключение при публикации без фото: {e}")
-            return False, f"Исключение: {str(e)}"
-
     try:
+        # Проверка токена
         check = requests.get(
             "https://api.vk.com/method/users.get",
             params={"access_token": vk_token, "v": "5.131"}
@@ -368,7 +277,6 @@ def post_to_vk(niche, image_bytes, text):
         traceback.print_exc(file=sys.stdout)
         return False, f"Исключение: {str(e)}"
 
-# ===== ВЫПОЛНЕНИЕ ЗАДАНИЯ =====
 def execute_scheduled_post(item):
     niche = item["niche"]
     topic = item["topic"]
@@ -384,17 +292,17 @@ def execute_scheduled_post(item):
 
     log("🖼️ Шаг 2: Генерация картинки...")
     image_url = generate_image(niche, topic)
-    image_bytes = None
-    if image_url:
-        log(f"✅ URL картинки: {image_url[:60]}...")
-        log("📥 Шаг 3: Скачивание картинки...")
-        image_bytes = download_image(image_url)
-        if image_bytes:
-            log(f"✅ Картинка скачана, размер {len(image_bytes)} байт")
-        else:
-            log("⚠️ Картинка не скачалась, публикуем без фото")
-    else:
-        log("⚠️ Картинка не сгенерирована, публикуем без фото")
+    if not image_url:
+        log("❌ Картинка не сгенерирована")
+        return
+    log(f"✅ URL картинки: {image_url[:60]}...")
+
+    log("📥 Шаг 3: Скачивание картинки...")
+    image_bytes = download_image(image_url)
+    if not image_bytes:
+        log("❌ Картинка не скачалась")
+        return
+    log(f"✅ Картинка скачана, размер {len(image_bytes)} байт")
 
     log("📤 Шаг 4: Публикация в VK...")
     success, error = post_to_vk(niche, image_bytes, post_text)
