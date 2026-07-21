@@ -7,39 +7,18 @@ import threading
 import time
 import re
 import traceback
-import logging
-from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from functools import wraps
 
-# ===== ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ (для консоли) =====
+# ===== ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ =====
 sys.stdout.reconfigure(line_buffering=True)
 
-# ===== НАСТРОЙКА ЛОГГИРОВАНИЯ (файл + консоль) =====
-DATA_DIR = "/data"
-os.makedirs(DATA_DIR, exist_ok=True)
-LOG_FILE = os.path.join(DATA_DIR, "bot.log")
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-# Хендлер для файла с ротацией (5 МБ, 3 бэкапа)
-file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=3)
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-logger.addHandler(file_handler)
-
-# Хендлер для консоли (как раньше)
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-logger.addHandler(console_handler)
-
 def log(msg):
-    """Универсальная функция логирования"""
-    logging.info(msg)
+    print(msg, flush=True)
 
 # ===== ПОСТОЯННОЕ ХРАНИЛИЩЕ =====
+DATA_DIR = "/data"
+os.makedirs(DATA_DIR, exist_ok=True)
 SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
 log(f"📂 Путь к расписанию: {SCHEDULE_FILE}")
 
@@ -106,64 +85,6 @@ try:
 except Exception as e:
     log(f"⚠️ Ошибка удаления вебхука: {e}")
 
-# ===== ПРОВЕРКА ЗДОРОВЬЯ API =====
-log("🔍 Проверка доступности внешних API...")
-if AGNES_API_KEY:
-    try:
-        resp = requests.post(
-            "https://apihub.agnes-ai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {AGNES_API_KEY}"},
-            json={"model": "agnes-2.0-flash", "messages": [{"role": "user", "content": "ping"}]},
-            timeout=10
-        )
-        if resp.status_code == 200:
-            log("✅ Agnes AI (текст) доступен")
-        else:
-            log(f"⚠️ Agnes AI (текст) ответил {resp.status_code}")
-    except Exception as e:
-        log(f"⚠️ Agnes AI (текст) недоступен: {e}")
-else:
-    log("ℹ️ Agnes AI не настроен")
-
-if GIGACHAT_API_KEY:
-    try:
-        resp = requests.head("https://gigachat.devices.sberbank.ru/api/v1", timeout=5)
-        log(f"✅ GigaChat доступен (код {resp.status_code})")
-    except Exception as e:
-        log(f"⚠️ GigaChat недоступен: {e}")
-else:
-    log("ℹ️ GigaChat не настроен")
-
-# ===== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ RETRY =====
-def retry_call(func, *args, max_retries=3, delay=2, backoff=2, **kwargs):
-    """
-    Выполняет функцию с повторными попытками при исключениях или статусах ошибок.
-    delay - начальная задержка в секундах, backoff - множитель.
-    """
-    last_exception = None
-    for attempt in range(max_retries):
-        try:
-            result = func(*args, **kwargs)
-            # Если результат - кортеж (success, data) - проверяем success
-            if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], bool):
-                if not result[0] and attempt < max_retries - 1:
-                    raise Exception(f"Function returned failure: {result[1]}")
-                return result
-            # Если результат - словарь с ключом error (как у VK)
-            if isinstance(result, dict) and result.get('error'):
-                raise Exception(result['error'].get('error_msg', 'Unknown API error'))
-            return result
-        except Exception as e:
-            last_exception = e
-            log(f"   ⚠️ Попытка {attempt+1}/{max_retries} не удалась: {e}")
-            if attempt < max_retries - 1:
-                sleep_time = delay * (backoff ** attempt)
-                log(f"   ⏳ Повтор через {sleep_time:.1f} сек...")
-                time.sleep(sleep_time)
-            else:
-                log(f"   ❌ Все {max_retries} попыток провалились")
-    raise last_exception
-
 # ===== ФУНКЦИИ РАБОТЫ С РАСПИСАНИЕМ =====
 def load_schedule():
     try:
@@ -188,7 +109,7 @@ def save_schedule(schedule):
     except Exception as e:
         log(f"⚠️ Ошибка сохранения: {e}")
 
-# ===== ГЕНЕРАЦИЯ ТЕКСТА (с retry) =====
+# ===== ГЕНЕРАЦИЯ ТЕКСТА =====
 def generate_post_text(niche, topic):
     log(f"🔤 Генерация текста для {niche}: {topic}")
     system_prompt = (
@@ -208,27 +129,27 @@ def generate_post_text(niche, topic):
         ],
         "temperature": 0.85
     }
-    def _do_request():
+    try:
         response = requests.post(
             "https://apihub.agnes-ai.com/v1/chat/completions",
             headers=headers,
             json=data,
             timeout=120
         )
-        if response.status_code != 200:
-            raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
-        result = response.json()
-        return result["choices"][0]["message"]["content"]
-
-    try:
-        text = retry_call(_do_request, max_retries=3, delay=2, backoff=2)
-        log(f"   Текст получен, длина {len(text)}")
-        return text
+        if response.status_code == 200:
+            result = response.json()
+            text = result["choices"][0]["message"]["content"]
+            log(f"   Текст получен, длина {len(text)}")
+            return text
+        else:
+            log(f"   Ошибка текста: {response.status_code}")
+            return None
     except Exception as e:
-        log(f"   ❌ Генерация текста окончательно провалилась: {e}")
+        log(f"   Исключение при генерации текста: {e}")
+        traceback.print_exc(file=sys.stdout)
         return None
 
-# ===== ГЕНЕРАЦИЯ КАРТИНКИ (Agnes -> GigaChat -> Pollinations) с retry =====
+# ===== ГЕНЕРАЦИЯ КАРТИНКИ (Agnes -> GigaChat -> Pollinations) =====
 def generate_image_agnes(prompt):
     log("   🖼️ Попытка Agnes...")
     if not AGNES_API_KEY:
@@ -241,25 +162,22 @@ def generate_image_agnes(prompt):
         "size": "1024x1024",
         "n": 1
     }
-    def _do():
+    try:
         response = requests.post(
             "https://apihub.agnes-ai.com/v1/images/generations",
             headers=headers,
             json=data,
             timeout=120
         )
-        if response.status_code != 200:
-            raise Exception(f"HTTP {response.status_code}")
-        json_resp = response.json()
-        if not json_resp.get("data") or len(json_resp["data"]) == 0:
-            raise Exception("Empty data in response")
-        return json_resp["data"][0]["url"]
-    try:
-        url = retry_call(_do, max_retries=2, delay=3, backoff=2)
-        log("   ✅ Agnes успешно")
-        return url
+        if response.status_code == 200:
+            url = response.json()["data"][0]["url"]
+            log("   ✅ Agnes успешно")
+            return url
+        else:
+            log(f"   ❌ Agnes ошибка: {response.status_code}")
+            return None
     except Exception as e:
-        log(f"   ❌ Agnes окончательно: {e}")
+        log(f"   ❌ Agnes исключение: {e}")
         return None
 
 def generate_image_gigachat(prompt):
@@ -277,34 +195,37 @@ def generate_image_gigachat(prompt):
         "size": "1024x1024",
         "n": 1
     }
-    def _do():
+    try:
         response = requests.post(
             "https://gigachat.devices.sberbank.ru/api/v1/images/generations",
             headers=headers,
             json=data,
             timeout=120
         )
-        if response.status_code != 200:
-            raise Exception(f"HTTP {response.status_code}")
-        json_resp = response.json()
-        if not json_resp.get("data") or len(json_resp["data"]) == 0:
-            raise Exception("Empty data in response")
-        return json_resp["data"][0]["url"]
-    try:
-        url = retry_call(_do, max_retries=2, delay=3, backoff=2)
-        log("   ✅ GigaChat успешно")
-        return url
+        if response.status_code == 200:
+            url = response.json()["data"][0]["url"]
+            log("   ✅ GigaChat успешно")
+            return url
+        else:
+            log(f"   ❌ GigaChat ошибка: {response.status_code}")
+            return None
     except Exception as e:
-        log(f"   ❌ GigaChat окончательно: {e}")
+        log(f"   ❌ GigaChat исключение: {e}")
         return None
 
 def generate_image_pollinations(prompt):
-    log("   🖼️ Попытка Pollinations (без предварительной проверки)...")
+    log("   🖼️ Попытка Pollinations...")
     try:
         prompt_encoded = urllib.parse.quote(prompt)
         url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
-        log("   ✅ URL сформирован")
-        return url
+        # Проверяем доступность (HEAD-запрос)
+        resp = requests.head(url, timeout=10)
+        if resp.status_code == 200:
+            log("   ✅ Pollinations доступен")
+            return url
+        else:
+            log(f"   ❌ Pollinations ошибка: {resp.status_code}")
+            return None
     except Exception as e:
         log(f"   ❌ Pollinations исключение: {e}")
         return None
@@ -316,6 +237,7 @@ def generate_image(niche, topic):
         "Яркие цвета, современный стиль, 1:1, без текста."
     )
 
+    # Цепочка: Agnes -> GigaChat -> Pollinations
     url = generate_image_agnes(prompt)
     if url:
         return url
@@ -333,51 +255,21 @@ def generate_image(niche, topic):
 
 def download_image(url):
     log(f"📥 Скачивание картинки: {url[:60]}...")
-    def _do():
+    try:
         response = requests.get(url, timeout=60)
-        if response.status_code != 200:
-            raise Exception(f"HTTP {response.status_code}")
-        content_type = response.headers.get('content-type', '')
-        if not content_type.startswith('image/') and len(response.content) < 100:
-            raise Exception("Получен не изображение или слишком маленький ответ")
-        return response.content
-    try:
-        content = retry_call(_do, max_retries=3, delay=2, backoff=2)
-        log(f"   Успешно, размер {len(content)} байт")
-        return content
+        if response.status_code == 200:
+            content = response.content
+            log(f"   Успешно, размер {len(content)} байт")
+            return content
+        else:
+            log(f"   Ошибка скачивания: {response.status_code}")
+            return None
     except Exception as e:
-        log(f"   ❌ Скачивание провалилось: {e}")
+        log(f"   Исключение при скачивании: {e}")
+        traceback.print_exc(file=sys.stdout)
         return None
 
-# ===== ПУБЛИКАЦИЯ В VK (с retry и улучшенной обработкой) =====
-def vk_api_request(method, params, token=None, retries=3):
-    """
-    Универсальная функция для вызова VK API с повторными попытками.
-    params - словарь параметров (без access_token и v)
-    token - токен группы
-    """
-    if token is None:
-        raise ValueError("Не передан токен VK")
-    base_url = "https://api.vk.com/method/"
-    params = params.copy()
-    params["access_token"] = token
-    params["v"] = "5.131"
-
-    def _do():
-        response = requests.get(base_url + method, params=params, timeout=60)
-        if response.status_code != 200:
-            raise Exception(f"HTTP {response.status_code}")
-        json_resp = response.json()
-        if "error" in json_resp:
-            raise Exception(json_resp["error"]["error_msg"])
-        return json_resp["response"]
-
-    try:
-        return retry_call(_do, max_retries=retries, delay=2, backoff=2)
-    except Exception as e:
-        log(f"   ❌ Ошибка VK API ({method}): {e}")
-        return None
-
+# ===== ПУБЛИКАЦИЯ В VK =====
 def post_to_vk(niche, image_bytes, text):
     log(f"📤 Публикация в {niche}")
     if niche not in VK_ACCOUNTS:
@@ -389,106 +281,88 @@ def post_to_vk(niche, image_bytes, text):
     if image_bytes is None:
         log("   Публикация без фото (только текст)")
         try:
-            result = vk_api_request(
-                "wall.post",
-                {
+            post = requests.get(
+                "https://api.vk.com/method/wall.post",
+                params={
                     "owner_id": group_id,
                     "message": text,
+                    "access_token": vk_token,
+                    "v": "5.131",
                     "from_group": 1
-                },
-                token=vk_token,
-                retries=3
-            )
-            if result is None:
-                return False, "Ошибка VK API при публикации текста"
-            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
+                }
+            ).json()
+            if "error" in post:
+                log(f"   Ошибка публикации (текст): {post['error']['error_msg']}")
+                return False, f"Ошибка публикации: {post['error']['error_msg']}"
+            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {post['response']['post_id']}")
             return True, None
         except Exception as e:
             log(f"   Исключение при публикации без фото: {e}")
             return False, f"Исключение: {str(e)}"
 
     try:
-        # Проверка токена
-        user = vk_api_request("users.get", {}, token=vk_token, retries=2)
-        if user is None:
-            return False, "Ошибка токена или API"
+        check = requests.get(
+            "https://api.vk.com/method/users.get",
+            params={"access_token": vk_token, "v": "5.131"}
+        ).json()
+        if "error" in check:
+            log(f"   Ошибка токена: {check['error']['error_msg']}")
+            return False, f"Ошибка токена: {check['error']['error_msg']}"
         log("   Токен OK")
 
-        # Получение upload_url
-        upload_resp = vk_api_request(
-            "photos.getWallUploadServer",
-            {"group_id": abs(group_id)},
-            token=vk_token,
-            retries=3
-        )
-        if upload_resp is None:
-            return False, "Не удалось получить upload_url"
-        upload_url = upload_resp["upload_url"]
+        upload_resp = requests.get(
+            "https://api.vk.com/method/photos.getWallUploadServer",
+            params={"group_id": abs(group_id), "access_token": vk_token, "v": "5.131"}
+        ).json()
+        if "error" in upload_resp:
+            log(f"   Ошибка upload_url: {upload_resp['error']['error_msg']}")
+            return False, f"Ошибка upload_url: {upload_resp['error']['error_msg']}"
+        upload_url = upload_resp["response"]["upload_url"]
         log(f"   upload_url получен: {upload_url[:50]}...")
 
-        # Загрузка фото с улучшенной обработкой ответа
-        def _upload_photo():
-            files = {"photo": ("image.jpg", image_bytes, "image/jpeg")}
-            resp = requests.post(upload_url, files=files, timeout=60)
-            if resp.status_code != 200:
-                raise Exception(f"HTTP {resp.status_code} при загрузке")
-            data = resp.json()
-            # Логируем полный ответ для отладки
-            log(f"   Ответ сервера загрузки: {data}")
+        files = {"photo": ("image.jpg", image_bytes, "image/jpeg")}
+        up = requests.post(upload_url, files=files).json()
+        if "error" in up:
+            log(f"   Ошибка загрузки: {up['error']['error_msg']}")
+            return False, f"Ошибка загрузки: {up['error']['error_msg']}"
+        if up.get("photo") == "[]":
+            log("   Пустой ответ от сервера загрузки")
+            return False, "Пустой ответ от сервера загрузки"
 
-            # Проверяем наличие ошибки в ответе
-            if data.get("error"):
-                error_msg = data["error"].get("error_msg", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"])
-                raise Exception(f"Ошибка загрузки: {error_msg}")
-
-            # Проверяем обязательные поля
-            if not all(k in data for k in ("server", "photo", "hash")):
-                raise Exception(f"Неполный ответ: отсутствуют server, photo или hash. Ответ: {data}")
-
-            # Проверяем, что photo не пустая строка
-            if data.get("photo") == "[]" or not data.get("photo"):
-                raise Exception("Поле photo пустое или содержит '[]'")
-
-            return data
-
-        try:
-            up = retry_call(_upload_photo, max_retries=3, delay=2, backoff=2)
-        except Exception as e:
-            log(f"   Ошибка загрузки фото: {e}")
-            return False, f"Ошибка загрузки фото: {str(e)}"
-
-        # Сохранение фото на стене
-        save_params = {
-            "group_id": abs(group_id),
-            "server": up["server"],
-            "photo": up["photo"],
-            "hash": up["hash"]
-        }
-        save_resp = vk_api_request(
-            "photos.saveWallPhoto",
-            save_params,
-            token=vk_token,
-            retries=3
-        )
-        if save_resp is None:
-            return False, "Ошибка сохранения фото"
-        photo = save_resp[0]
+        save = requests.get(
+            "https://api.vk.com/method/photos.saveWallPhoto",
+            params={
+                "group_id": abs(group_id),
+                "server": up["server"],
+                "photo": up["photo"],
+                "hash": up["hash"],
+                "access_token": vk_token,
+                "v": "5.131"
+            }
+        ).json()
+        if "error" in save:
+            log(f"   Ошибка сохранения: {save['error']['error_msg']}")
+            return False, f"Ошибка сохранения: {save['error']['error_msg']}"
+        photo = save["response"][0]
         attachment = f"photo{photo['owner_id']}_{photo['id']}"
         log(f"   Фото сохранено, attachment: {attachment}")
 
-        # Публикация поста
-        post_params = {
-            "owner_id": group_id,
-            "message": text,
-            "attachments": attachment,
-            "from_group": 1
-        }
-        post_resp = vk_api_request("wall.post", post_params, token=vk_token, retries=3)
-        if post_resp is None:
-            return False, "Ошибка публикации поста"
-        log(f"✅ Пост опубликован в группе {group_id}, ID: {post_resp['post_id']}")
+        post = requests.get(
+            "https://api.vk.com/method/wall.post",
+            params={
+                "owner_id": group_id,
+                "message": text,
+                "attachments": attachment,
+                "access_token": vk_token,
+                "v": "5.131",
+                "from_group": 1
+            }
+        ).json()
+        if "error" in post:
+            log(f"   Ошибка публикации: {post['error']['error_msg']}")
+            return False, f"Ошибка публикации: {post['error']['error_msg']}"
+        log(f"✅ Пост опубликован в группе {group_id}, ID: {post['response']['post_id']}")
         return True, None
-
     except Exception as e:
         log(f"   Исключение в post_to_vk: {e}")
         traceback.print_exc(file=sys.stdout)
