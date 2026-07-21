@@ -127,15 +127,12 @@ else:
 
 if GIGACHAT_API_KEY:
     try:
-        # Простой HEAD-запрос для проверки доступности
         resp = requests.head("https://gigachat.devices.sberbank.ru/api/v1", timeout=5)
         log(f"✅ GigaChat доступен (код {resp.status_code})")
     except Exception as e:
         log(f"⚠️ GigaChat недоступен: {e}")
 else:
     log("ℹ️ GigaChat не настроен")
-
-# Проверка Pollinations не требуется, он всегда доступен по факту.
 
 # ===== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ RETRY =====
 def retry_call(func, *args, max_retries=3, delay=2, backoff=2, **kwargs):
@@ -150,7 +147,6 @@ def retry_call(func, *args, max_retries=3, delay=2, backoff=2, **kwargs):
             # Если результат - кортеж (success, data) - проверяем success
             if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], bool):
                 if not result[0] and attempt < max_retries - 1:
-                    # Если ошибка, пробуем ещё (но не прерываем, а переходим к следующей попытке)
                     raise Exception(f"Function returned failure: {result[1]}")
                 return result
             # Если результат - словарь с ключом error (как у VK)
@@ -307,7 +303,6 @@ def generate_image_pollinations(prompt):
     try:
         prompt_encoded = urllib.parse.quote(prompt)
         url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
-        # Возвращаем URL сразу, скачивание будет с retry
         log("   ✅ URL сформирован")
         return url
     except Exception as e:
@@ -321,7 +316,6 @@ def generate_image(niche, topic):
         "Яркие цвета, современный стиль, 1:1, без текста."
     )
 
-    # Цепочка: Agnes -> GigaChat -> Pollinations
     url = generate_image_agnes(prompt)
     if url:
         return url
@@ -343,14 +337,9 @@ def download_image(url):
         response = requests.get(url, timeout=60)
         if response.status_code != 200:
             raise Exception(f"HTTP {response.status_code}")
-        # Проверим, что это изображение (по content-type)
         content_type = response.headers.get('content-type', '')
-        if not content_type.startswith('image/'):
-            # Если не изображение, возможно ошибка (например, HTML)
-            # Но не будем строго проверять, т.к. некоторые сервисы могут отдавать без типа
-            # просто проверим, что размер > 0
-            if len(response.content) < 100:
-                raise Exception("Получен слишком маленький ответ, вероятно ошибка")
+        if not content_type.startswith('image/') and len(response.content) < 100:
+            raise Exception("Получен не изображение или слишком маленький ответ")
         return response.content
     try:
         content = retry_call(_do, max_retries=3, delay=2, backoff=2)
@@ -360,25 +349,21 @@ def download_image(url):
         log(f"   ❌ Скачивание провалилось: {e}")
         return None
 
-# ===== ПУБЛИКАЦИЯ В VK (с retry) =====
+# ===== ПУБЛИКАЦИЯ В VK (с retry и улучшенной обработкой) =====
 def vk_api_request(method, params, token=None, retries=3):
     """
     Универсальная функция для вызова VK API с повторными попытками.
-    params - словарь параметров (без access_token и v, если они заданы отдельно)
-    token - токен группы, если не передан, берется из VK_ACCOUNTS
+    params - словарь параметров (без access_token и v)
+    token - токен группы
     """
     if token is None:
         raise ValueError("Не передан токен VK")
-
     base_url = "https://api.vk.com/method/"
     params = params.copy()
     params["access_token"] = token
     params["v"] = "5.131"
 
     def _do():
-        # Используем GET для всех методов, но если POST нужен, можно адаптировать
-        # VK API принимает GET и POST, но для загрузки фото используется POST отдельно
-        # Здесь только обычные методы, поэтому GET
         response = requests.get(base_url + method, params=params, timeout=60)
         if response.status_code != 200:
             raise Exception(f"HTTP {response.status_code}")
@@ -441,17 +426,29 @@ def post_to_vk(niche, image_bytes, text):
         upload_url = upload_resp["upload_url"]
         log(f"   upload_url получен: {upload_url[:50]}...")
 
-        # Загрузка фото (этот запрос требует POST и multipart)
+        # Загрузка фото с улучшенной обработкой ответа
         def _upload_photo():
             files = {"photo": ("image.jpg", image_bytes, "image/jpeg")}
             resp = requests.post(upload_url, files=files, timeout=60)
             if resp.status_code != 200:
                 raise Exception(f"HTTP {resp.status_code} при загрузке")
             data = resp.json()
+            # Логируем полный ответ для отладки
+            log(f"   Ответ сервера загрузки: {data}")
+
+            # Проверяем наличие ошибки в ответе
             if data.get("error"):
-                raise Exception(data["error"]["error_msg"] if isinstance(data["error"], dict) else str(data["error"]))
-            if data.get("photo") == "[]":
-                raise Exception("Пустой ответ от сервера загрузки")
+                error_msg = data["error"].get("error_msg", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"])
+                raise Exception(f"Ошибка загрузки: {error_msg}")
+
+            # Проверяем обязательные поля
+            if not all(k in data for k in ("server", "photo", "hash")):
+                raise Exception(f"Неполный ответ: отсутствуют server, photo или hash. Ответ: {data}")
+
+            # Проверяем, что photo не пустая строка
+            if data.get("photo") == "[]" or not data.get("photo"):
+                raise Exception("Поле photo пустое или содержит '[]'")
+
             return data
 
         try:
