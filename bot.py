@@ -581,10 +581,10 @@ def send_message(chat_id, text):
     except Exception as e:
         log(f"⚠️ Ошибка отправки: {e}")
 
-# ===== ФУНКЦИЯ get_updates С УЛУЧШЕННЫМ ОПРОСОМ =====
+# ===== ФУНКЦИЯ get_updates =====
 def get_updates(offset):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    params = {"offset": offset, "timeout": 10, "allowed_updates": ["message"]}  # уменьшили таймаут
+    params = {"offset": offset, "timeout": 10, "allowed_updates": ["message"]}
     try:
         resp = requests.get(url, params=params, timeout=15)
         if resp.status_code == 200:
@@ -601,6 +601,15 @@ def get_updates(offset):
 # ===== ЗАПУСК =====
 if __name__ == "__main__":
     log("🤖 Бот запущен...")
+
+    # ДОБАВЛЯЕМ АВТОМАТИЧЕСКОЕ ТЕСТОВОЕ ЗАДАНИЕ, ЕСЛИ РАСПИСАНИЕ ПУСТОЕ
+    schedule = load_schedule()
+    if not schedule:
+        test_time = (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")
+        schedule.append({"id": "auto_test", "niche": "ai", "topic": "Автоматический тестовый пост", "time": test_time, "done": False})
+        save_schedule(schedule)
+        log(f"🧪 Добавлено тестовое задание на {test_time} в группу ai")
+
     threading.Thread(target=scheduler_loop, daemon=True).start()
     update_id = 0
     while True:
@@ -609,4 +618,4 @@ if __name__ == "__main__":
             update_id = upd["update_id"]
             if "message" in upd:
                 process_message(upd["message"])
-        time.sleep(0.5)  # уменьшили задержку
+        time.sleep(0.5)
