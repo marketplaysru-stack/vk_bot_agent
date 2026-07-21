@@ -337,7 +337,7 @@ def download_image(url):
         log(f"   ❌ Скачивание провалилось: {e}")
         return None
 
-# ===== ПУБЛИКАЦИЯ В VK (исправленная версия) =====
+# ===== ПУБЛИКАЦИЯ В VK =====
 def vk_api_request(method, params, token=None, retries=3):
     if token is None:
         raise ValueError("Не передан токен VK")
@@ -581,6 +581,7 @@ def send_message(chat_id, text):
     except Exception as e:
         log(f"⚠️ Ошибка отправки: {e}")
 
+# ===== ИСПРАВЛЕННАЯ ФУНКЦИЯ get_updates (с логированием) =====
 def get_updates(offset):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
     params = {"offset": offset, "timeout": 30, "allowed_updates": ["message"]}
@@ -588,6 +589,7 @@ def get_updates(offset):
         resp = requests.get(url, params=params, timeout=35)
         if resp.status_code == 200:
             data = resp.json()
+            log(f"📨 Ответ от getUpdates: {data}")   # <-- НОВАЯ СТРОКА
             if data.get("result"):
                 return data["result"]
         else:
