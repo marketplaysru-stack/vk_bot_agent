@@ -12,7 +12,7 @@ from telebot import apihelper
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ============================================================
-#  HTTP-СЕРВЕР ДЛЯ HEALTH CHECK (чтобы Ботхост не ругался)
+#  HTTP-СЕРВЕР ДЛЯ HEALTH CHECK
 # ============================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -21,14 +21,12 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
     
     def log_message(self, format, *args):
-        # Отключаем вывод логов от сервера, чтобы не засорять консоль
         pass
 
 def run_health_server():
     server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
     server.serve_forever()
 
-# Запускаем health-сервер в отдельном потоке
 health_thread = threading.Thread(target=run_health_server, daemon=True)
 health_thread.start()
 print("🟢 Health-сервер запущен на порту 8080", flush=True)
@@ -79,6 +77,15 @@ try:
     print("✅ Бот инициализирован", flush=True)
 except Exception as e:
     print(f"❌ Ошибка инициализации бота: {e}", flush=True)
+    sys.exit(1)
+
+# ===== ПРОВЕРКА ПОДКЛЮЧЕНИЯ К TELEGRAM =====
+try:
+    bot_info = bot.get_me()
+    print(f"✅ Подключение к Telegram установлено, бот: @{bot_info.username}", flush=True)
+except Exception as e:
+    print(f"❌ Не удалось подключиться к Telegram: {e}", flush=True)
+    print("Проверьте токен BOT_TOKEN и доступ к api.telegram.org", flush=True)
     sys.exit(1)
 
 SCHEDULE_FILE = "schedule.json"
@@ -382,6 +389,7 @@ if __name__ == "__main__":
     # Запускаем планировщик
     threading.Thread(target=scheduler_loop, daemon=True).start()
     try:
+        print("🔄 Запуск polling...", flush=True)
         bot.polling(none_stop=True)
     except Exception as e:
         print(f"❌ Ошибка в polling: {e}", flush=True)
