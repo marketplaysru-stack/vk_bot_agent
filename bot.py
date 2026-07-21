@@ -15,7 +15,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # ===== ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ =====
 sys.stdout.reconfigure(line_buffering=True)
 
-# ===== НАСТРОЙКА ЛОГГИРОВАНИЯ (файл + консоль) =====
+# ===== НАСТРОЙКА ЛОГГИРОВАНИЯ =====
 DATA_DIR = "/data"
 os.makedirs(DATA_DIR, exist_ok=True)
 LOG_FILE = os.path.join(DATA_DIR, "bot.log")
@@ -69,7 +69,6 @@ if not BOT_TOKEN:
 if not AGNES_API_KEY:
     log("⚠️ AGNES_API_KEY не задан (картинки через Pollinations)")
 
-# Загружаем группы VK и сразу проверяем токены
 VK_ACCOUNTS = {}
 for name, suffix in [("родительский", "РОДИТЕЛЬСКИЙ"), ("строительный", "СТРОИТЕЛЬНЫЙ"), ("ai", "AI")]:
     token = os.getenv(f"VK_TOKEN_{suffix}")
@@ -77,8 +76,6 @@ for name, suffix in [("родительский", "РОДИТЕЛЬСКИЙ"), (
     if token and group_id_str:
         VK_ACCOUNTS[name] = {"token": token, "group_id": int(group_id_str)}
         log(f"✅ Группа '{name}': ID={group_id_str}, токен: {token[:10]}...")
-    else:
-        log(f"❌ Группа '{name}' не настроена")
 
 if not VK_ACCOUNTS:
     log("❌ Нет групп VK")
@@ -103,15 +100,15 @@ try:
 except Exception as e:
     log(f"⚠️ Ошибка удаления вебхука: {e}")
 
-# ===== ФУНКЦИЯ ДЛЯ ПРОВЕРКИ ТОКЕНА VK (подробный вывод) =====
+# ===== ФУНКЦИЯ ПРОВЕРКИ ТОКЕНА VK (без users.get) =====
 def check_vk_token(token, group_id):
-    """Проверяет токен и права на публикацию в группе"""
+    """Проверяет токен и права на публикацию в группе (для сервисных токенов)"""
     log(f"   Проверка токена для группы {group_id}...")
     try:
-        # Проверяем, что токен валидный
+        # Проверяем доступ к группе через groups.getById
         resp = requests.get(
-            "https://api.vk.com/method/users.get",
-            params={"access_token": token, "v": "5.131"},
+            "https://api.vk.com/method/groups.getById",
+            params={"group_id": abs(group_id), "access_token": token, "v": "5.131"},
             timeout=10
         )
         if resp.status_code != 200:
@@ -119,25 +116,27 @@ def check_vk_token(token, group_id):
             return False, f"HTTP {resp.status_code}"
         data = resp.json()
         if "error" in data:
-            log(f"   ❌ Ошибка токена: {data['error']['error_msg']}")
+            log(f"   ❌ Ошибка доступа к группе: {data['error']['error_msg']}")
             return False, data['error']['error_msg']
-        log(f"   ✅ Токен валиден, пользователь: {data['response'][0]['first_name']} {data['response'][0]['last_name']}")
+        if "response" not in data or not data["response"]:
+            log(f"   ❌ Группа не найдена или нет доступа")
+            return False, "Группа не найдена или нет доступа"
+        log(f"   ✅ Группа доступна, ID: {data['response'][0]['id']}")
 
-        # Проверяем, есть ли право на публикацию (wall.post)
-        # Делаем тестовый запрос на получение информации о группе
+        # Проверяем право на чтение стены (wall.get) – это даёт представление о правах
         resp = requests.get(
-            "https://api.vk.com/method/groups.getById",
-            params={"group_id": abs(group_id), "access_token": token, "v": "5.131"},
+            "https://api.vk.com/method/wall.get",
+            params={"owner_id": group_id, "count": 1, "access_token": token, "v": "5.131"},
             timeout=10
         )
         if resp.status_code != 200:
-            log(f"   ❌ Ошибка HTTP при проверке группы: {resp.status_code}")
-            return False, f"HTTP {resp.status_code}"
-        data = resp.json()
-        if "error" in data:
-            log(f"   ❌ Ошибка доступа к группе: {data['error']['error_msg']}")
-            return False, data['error']['error_msg']
-        log(f"   ✅ Группа доступна, ID: {data['response'][0]['id']}")
+            log(f"   ⚠️ Не удалось проверить права на стену: HTTP {resp.status_code}")
+        else:
+            data = resp.json()
+            if "error" in data:
+                log(f"   ⚠️ Нет прав на чтение стены: {data['error']['error_msg']}")
+            else:
+                log(f"   ✅ Права на стену есть")
         return True, "OK"
     except Exception as e:
         log(f"   ❌ Исключение при проверке: {e}")
@@ -200,7 +199,7 @@ def save_schedule(schedule):
     except Exception as e:
         log(f"⚠️ Ошибка сохранения: {e}")
 
-# ===== ГЕНЕРАЦИЯ ТЕКСТА (рабочая) =====
+# ===== ГЕНЕРАЦИЯ ТЕКСТА =====
 def generate_post_text(niche, topic):
     log(f"🔤 Генерация текста для {niche}: {topic}")
     system_prompt = (
@@ -239,7 +238,7 @@ def generate_post_text(niche, topic):
         log(f"   ❌ Генерация текста провалилась: {e}")
         return None
 
-# ===== ГЕНЕРАЦИЯ КАРТИНКИ (рабочая) =====
+# ===== ГЕНЕРАЦИЯ КАРТИНКИ =====
 def generate_image_agnes(prompt):
     log("   🖼️ Попытка Agnes...")
     if not AGNES_API_KEY:
@@ -355,7 +354,7 @@ def download_image(url):
         log(f"   ❌ Скачивание провалилось: {e}")
         return None
 
-# ===== ПУБЛИКАЦИЯ В VK (с расширенным логированием) =====
+# ===== ПУБЛИКАЦИЯ В VK =====
 def vk_api_request(method, params, token, retries=3):
     base_url = "https://api.vk.com/method/"
     params = params.copy()
@@ -367,7 +366,6 @@ def vk_api_request(method, params, token, retries=3):
             raise Exception(f"HTTP {response.status_code}")
         json_resp = response.json()
         if "error" in json_resp:
-            # Логируем полную ошибку
             log(f"   ❌ VK API ошибка в {method}: {json_resp['error']}")
             raise Exception(json_resp["error"]["error_msg"])
         return json_resp["response"]
@@ -384,7 +382,7 @@ def post_to_vk(niche, image_bytes, text):
     vk_token = VK_ACCOUNTS[niche]["token"]
     group_id = VK_ACCOUNTS[niche]["group_id"]
 
-    # Сначала проверим токен (повторно, чтобы убедиться)
+    # Повторная проверка токена перед публикацией (но без users.get)
     log(f"   Повторная проверка токена для {niche}...")
     ok, msg = check_vk_token(vk_token, group_id)
     if not ok:
@@ -594,7 +592,6 @@ def get_updates(offset):
         resp = requests.get(url, params=params, timeout=15)
         if resp.status_code == 200:
             data = resp.json()
-            # Логируем только если есть result
             if data.get("result"):
                 log(f"📨 Получены обновления: {len(data['result'])} сообщений")
             if data.get("result"):
@@ -605,7 +602,7 @@ def get_updates(offset):
         log(f"⚠️ getUpdates исключение: {e}")
     return []
 
-# ===== ТЕСТОВЫЕ ПОСТЫ ПРИ СТАРТЕ (для диагностики) =====
+# ===== ТЕСТОВЫЕ ПОСТЫ ПРИ СТАРТЕ =====
 def add_test_posts_if_empty():
     schedule = load_schedule()
     if not schedule:
@@ -625,7 +622,6 @@ def add_test_posts_if_empty():
 # ===== ГЛАВНЫЙ ЦИКЛ =====
 if __name__ == "__main__":
     log("🤖 Бот запущен, планировщик стартует...")
-    # Добавляем тестовые посты только если расписание пустое
     add_test_posts_if_empty()
     threading.Thread(target=scheduler_loop, daemon=True).start()
     update_id = 0
