@@ -3,19 +3,62 @@ import os
 import requests
 import json
 import urllib.parse
+import threading
 import time
+import re
 import traceback
-from datetime import datetime
+import logging
+from logging.handlers import RotatingFileHandler
+from datetime import datetime, timedelta
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ===== ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ =====
+# ===== ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ (для консоли) =====
 sys.stdout.reconfigure(line_buffering=True)
 
+# ===== НАСТРОЙКА ЛОГГИРОВАНИЯ (файл + консоль) =====
+DATA_DIR = "/data"
+os.makedirs(DATA_DIR, exist_ok=True)
+LOG_FILE = os.path.join(DATA_DIR, "bot.log")
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=3)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(file_handler)
+
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(console_handler)
+
 def log(msg):
-    print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {msg}", flush=True)
+    logging.info(msg)
 
-log("🚀 Запуск тестового бота (без планировщика)")
+# ===== ПОСТОЯННОЕ ХРАНИЛИЩЕ =====
+SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
+log(f"📂 Путь к расписанию: {SCHEDULE_FILE}")
 
-# ===== ПРОВЕРКА ПЕРЕМЕННЫХ =====
+# ===== Health-сервер (для Ботхоста) =====
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass
+
+def run_health_server():
+    server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
+    server.serve_forever()
+
+health_thread = threading.Thread(target=run_health_server, daemon=True)
+health_thread.start()
+log("🟢 Health-сервер запущен")
+
+log("🚀 Бот запускается...")
+
+# ===== ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 AGNES_API_KEY = os.getenv("AGNES_API_KEY")
 GIGACHAT_API_KEY = os.getenv("GIGACHAT_API_KEY")
@@ -24,8 +67,7 @@ if not BOT_TOKEN:
     log("❌ BOT_TOKEN не задан")
     sys.exit(1)
 if not AGNES_API_KEY:
-    log("⚠️ AGNES_API_KEY не задан, картинки через Pollinations")
-    log("✅ Основные переменные загружены")
+    log("⚠️ AGNES_API_KEY не задан (картинки будут через Pollinations)")
 
 VK_ACCOUNTS = {}
 for name, suffix in [("родительский", "РОДИТЕЛЬСКИЙ"), ("строительный", "СТРОИТЕЛЬНЫЙ"), ("ai", "AI")]:
@@ -35,19 +77,41 @@ for name, suffix in [("родительский", "РОДИТЕЛЬСКИЙ"), (
         VK_ACCOUNTS[name] = {"token": token, "group_id": int(group_id_str)}
         log(f"✅ Группа '{name}': ID={group_id_str}")
 if not VK_ACCOUNTS:
-    log("❌ Нет групп")
+    log("❌ Нет групп VK")
     sys.exit(1)
 
-# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+# ===== ПРОВЕРКА ПОДКЛЮЧЕНИЯ К TELEGRAM =====
+try:
+    r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=10)
+    if r.status_code == 200:
+        bot_info = r.json()["result"]
+        log(f"✅ Подключение к Telegram: @{bot_info['username']}")
+    else:
+        log(f"❌ Ошибка доступа к Telegram: {r.status_code}")
+        sys.exit(1)
+except Exception as e:
+    log(f"❌ Не удалось подключиться к Telegram: {e}")
+    sys.exit(1)
+
+# Удаляем вебхук (на всякий случай)
+try:
+    requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", timeout=10)
+    log("✅ Вебхук удалён")
+except Exception as e:
+    log(f"⚠️ Ошибка удаления вебхука: {e}")
+
+# ===== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ RETRY =====
 def retry_call(func, *args, max_retries=3, delay=2, backoff=2, **kwargs):
     last_exception = None
     for attempt in range(max_retries):
         try:
             result = func(*args, **kwargs)
+            # Если результат - кортеж (success, data) - проверяем success
             if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], bool):
                 if not result[0] and attempt < max_retries - 1:
                     raise Exception(f"Function returned failure: {result[1]}")
                 return result
+            # Если результат - словарь с ключом error (как у VK)
             if isinstance(result, dict) and result.get('error'):
                 raise Exception(result['error'].get('error_msg', 'Unknown API error'))
             return result
@@ -62,6 +126,31 @@ def retry_call(func, *args, max_retries=3, delay=2, backoff=2, **kwargs):
                 log(f"   ❌ Все {max_retries} попыток провалились")
     raise last_exception
 
+# ===== РАБОТА С РАСПИСАНИЕМ =====
+def load_schedule():
+    try:
+        if os.path.exists(SCHEDULE_FILE):
+            with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                log(f"📂 Загружено {len(data)} записей из {SCHEDULE_FILE}")
+                return data
+        else:
+            log(f"📂 Файл {SCHEDULE_FILE} не найден, создаём новый")
+            save_schedule([])
+            return []
+    except Exception as e:
+        log(f"⚠️ Ошибка загрузки: {e}")
+        return []
+
+def save_schedule(schedule):
+    try:
+        with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+            json.dump(schedule, f, ensure_ascii=False, indent=2)
+        log(f"💾 Сохранено {len(schedule)} записей в {SCHEDULE_FILE}")
+    except Exception as e:
+        log(f"⚠️ Ошибка сохранения: {e}")
+
+# ===== ГЕНЕРАЦИЯ ТЕКСТА (рабочая версия из теста) =====
 def generate_post_text(niche, topic):
     log(f"🔤 Генерация текста для {niche}: {topic}")
     system_prompt = (
@@ -100,6 +189,7 @@ def generate_post_text(niche, topic):
         log(f"   ❌ Генерация текста провалилась: {e}")
         return None
 
+# ===== ГЕНЕРАЦИЯ КАРТИНКИ (рабочая версия) =====
 def generate_image_agnes(prompt):
     log("   🖼️ Попытка Agnes...")
     if not AGNES_API_KEY:
@@ -215,6 +305,7 @@ def download_image(url):
         log(f"   ❌ Скачивание провалилось: {e}")
         return None
 
+# ===== ПУБЛИКАЦИЯ В VK (рабочая версия) =====
 def vk_api_request(method, params, token, retries=3):
     base_url = "https://api.vk.com/method/"
     params = params.copy()
@@ -306,21 +397,26 @@ def post_to_vk(niche, image_bytes, text):
         traceback.print_exc(file=sys.stdout)
         return False, f"Исключение: {str(e)}"
 
-# ===== ТЕСТОВАЯ ПУБЛИКАЦИЯ (прямо сейчас) =====
-if __name__ == "__main__":
-    log("🧪 Запуск тестовой публикации в группу 'ai'")
+# ===== ВЫПОЛНЕНИЕ ЗАПЛАНИРОВАННОГО ПОСТА =====
+def execute_scheduled_post(item):
+    niche = item["niche"]
+    topic = item["topic"]
+    time_str = item["time"]
+    log(f"📢 Публикую запланированный пост: '{topic}' в {time_str} (ниша: {niche})")
 
-    # Генерируем текст
-    text = generate_post_text("ai", "Тестовый пост для проверки бота")
-    if not text:
-        log("❌ Текст не получен, завершаем")
-        sys.exit(1)
+    log("🔤 Шаг 1: Генерация текста...")
+    post_text = generate_post_text(niche, topic)
+    if not post_text:
+        log("❌ Текст не сгенерирован, пропускаем пост")
+        return
+    log(f"✅ Текст получен, длина {len(post_text)}")
 
-    # Генерируем картинку
-    image_url = generate_image("ai", "Тестовый пост")
+    log("🖼️ Шаг 2: Генерация картинки...")
+    image_url = generate_image(niche, topic)
     image_bytes = None
     if image_url:
         log(f"✅ URL картинки: {image_url[:60]}...")
+        log("📥 Шаг 3: Скачивание картинки...")
         image_bytes = download_image(image_url)
         if image_bytes:
             log(f"✅ Картинка скачана, размер {len(image_bytes)} байт")
@@ -329,11 +425,134 @@ if __name__ == "__main__":
     else:
         log("⚠️ Картинка не сгенерирована, публикуем без фото")
 
-    # Публикуем
-    success, error = post_to_vk("ai", image_bytes, text)
+    log("📤 Шаг 4: Публикация в VK...")
+    success, error = post_to_vk(niche, image_bytes, post_text)
     if success:
-        log("🎉 УСПЕХ! Пост опубликован.")
+        log("✅ Пост успешно опубликован!")
     else:
-        log(f"❌ ОШИБКА: {error}")
+        log(f"❌ Ошибка публикации: {error}")
 
-    log("🏁 Тест завершён.")
+# ===== ПЛАНИРОВЩИК (проверка каждые 30 секунд) =====
+def scheduler_loop():
+    log("🔄 Планировщик запущен")
+    while True:
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            log(f"⏰ Текущее время: {now}")
+            schedule = load_schedule()
+            if not schedule:
+                log("📭 Расписание пустое")
+            else:
+                for item in schedule:
+                    if item["time"] == now and not item.get("done", False):
+                        log(f"📢 Найдено задание: {item['topic']} в {item['time']}")
+                        execute_scheduled_post(item)
+                        item["done"] = True
+                        save_schedule(schedule)
+        except Exception as e:
+            log(f"⚠️ Ошибка в планировщике: {e}")
+            traceback.print_exc(file=sys.stdout)
+        time.sleep(30)
+
+# ===== ОБРАБОТЧИКИ КОМАНД TELEGRAM =====
+def process_message(message):
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "").strip()
+    log(f"📩 Получено: {text}")
+
+    if text.startswith("/start"):
+        send_message(chat_id,
+            "👋 Бот для автопостинга.\n"
+            "/post_in ниша тема минуты — добавить пост через N минут\n"
+            "/list — показать все задания\n"
+            "/debug — показать содержимое schedule.json"
+        )
+        return
+
+    if text.startswith("/post_in"):
+        parts = text.replace("/post_in", "").strip()
+        match = re.search(r'(\d+)$', parts)
+        if not match:
+            send_message(chat_id, "❌ Укажи минуты (число в конце)")
+            return
+        minutes = int(match.group(1))
+        rest = parts[:match.start()].strip()
+        first_space = rest.find(' ')
+        if first_space == -1:
+            send_message(chat_id, "❌ Формат: /post_in ниша тема минуты")
+            return
+        niche = rest[:first_space].lower()
+        topic = rest[first_space+1:].strip()
+        if niche not in VK_ACCOUNTS:
+            send_message(chat_id, f"❌ Ниша '{niche}' не найдена. Доступные: {', '.join(VK_ACCOUNTS.keys())}")
+            return
+        publish_time = datetime.now() + timedelta(minutes=minutes)
+        full_time = publish_time.strftime("%Y-%m-%d %H:%M")
+        schedule = load_schedule()
+        new_id = str(int(time.time()))
+        schedule.append({"id": new_id, "niche": niche, "topic": topic, "time": full_time, "done": False})
+        save_schedule(schedule)
+        send_message(chat_id, f"✅ Пост добавлен: [{niche}] {topic} в {full_time}")
+        return
+
+    if text.startswith("/list"):
+        schedule = load_schedule()
+        if not schedule:
+            send_message(chat_id, "📭 Нет запланированных постов")
+        else:
+            lines = []
+            for item in schedule:
+                status = "✅" if item.get("done") else "⏳"
+                lines.append(f"{status} ID:{item['id']} {item['topic']} -> {item['time']}")
+            send_message(chat_id, "\n".join(lines[:10]))
+        return
+
+    if text.startswith("/debug"):
+        try:
+            if os.path.exists(SCHEDULE_FILE):
+                with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    send_message(chat_id, f"📄 Содержимое schedule.json:\n{content[:500]}")
+            else:
+                send_message(chat_id, "❌ Файл не найден")
+        except Exception as e:
+            send_message(chat_id, f"❌ Ошибка: {e}")
+        return
+
+def send_message(chat_id, text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        log(f"⚠️ Ошибка отправки: {e}")
+
+# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ (polling) =====
+def get_updates(offset):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    params = {"offset": offset, "timeout": 10, "allowed_updates": ["message"]}
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            log(f"📨 Ответ от getUpdates: {data}")
+            if data.get("result"):
+                return data["result"]
+        else:
+            log(f"⚠️ getUpdates ошибка: {resp.status_code}")
+    except Exception as e:
+        log(f"⚠️ getUpdates исключение: {e}")
+    return []
+
+# ===== ГЛАВНЫЙ ЦИКЛ =====
+if __name__ == "__main__":
+    log("🤖 Бот запущен, планировщик стартует...")
+    threading.Thread(target=scheduler_loop, daemon=True).start()
+    update_id = 0
+    while True:
+        updates = get_updates(update_id + 1)
+        for upd in updates:
+            update_id = upd["update_id"]
+            if "message" in upd:
+                process_message(upd["message"])
+        time.sleep(0.5)  # опрос каждые 0.5 секунды
