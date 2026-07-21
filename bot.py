@@ -12,10 +12,10 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ===== ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ =====
+# ===== ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ (для консоли) =====
 sys.stdout.reconfigure(line_buffering=True)
 
-# ===== НАСТРОЙКА ЛОГГИРОВАНИЯ =====
+# ===== НАСТРОЙКА ЛОГГИРОВАНИЯ (файл + консоль) =====
 DATA_DIR = "/data"
 os.makedirs(DATA_DIR, exist_ok=True)
 LOG_FILE = os.path.join(DATA_DIR, "bot.log")
@@ -39,7 +39,7 @@ def log(msg):
 SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
 log(f"📂 Путь к расписанию: {SCHEDULE_FILE}")
 
-# ===== HEALTH-СЕРВЕР =====
+# ===== Health-сервер (для Ботхоста) =====
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -58,7 +58,7 @@ log("🟢 Health-сервер запущен")
 
 log("🚀 Бот запускается...")
 
-# ===== ПРОВЕРКА ПЕРЕМЕННЫХ =====
+# ===== ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 AGNES_API_KEY = os.getenv("AGNES_API_KEY")
 GIGACHAT_API_KEY = os.getenv("GIGACHAT_API_KEY")
@@ -67,27 +67,25 @@ if not BOT_TOKEN:
     log("❌ BOT_TOKEN не задан")
     sys.exit(1)
 if not AGNES_API_KEY:
-    log("⚠️ AGNES_API_KEY не задан")
+    log("⚠️ AGNES_API_KEY не задан (картинки будут через Pollinations)")
 
 VK_ACCOUNTS = {}
 for name, suffix in [("родительский", "РОДИТЕЛЬСКИЙ"), ("строительный", "СТРОИТЕЛЬНЫЙ"), ("ai", "AI")]:
     token = os.getenv(f"VK_TOKEN_{suffix}")
     group_id_str = os.getenv(f"VK_GROUP_ID_{suffix}")
     if token and group_id_str:
-        try:
-            group_id = int(group_id_str)
-            VK_ACCOUNTS[name] = {"token": token, "group_id": group_id}
-            log(f"✅ Группа '{name}': ID={group_id}, токен: {token[:10]}...")
-        except ValueError:
-            log(f"❌ Неверный ID группы '{name}': {group_id_str}")
+        # Логируем начало токена для отладки
+        token_preview = token[:10] + "..." if token else None
+        VK_ACCOUNTS[name] = {"token": token, "group_id": int(group_id_str)}
+        log(f"✅ Группа '{name}': ID={group_id_str}, токен: {token_preview}")
     else:
-        log(f"⚠️ Не заданы переменные для группы '{name}'")
+        log(f"⚠️ Группа '{name}' не настроена (токен или ID отсутствуют)")
 
 if not VK_ACCOUNTS:
     log("❌ Нет групп VK")
     sys.exit(1)
 
-# ===== ПРОВЕРКА TELEGRAM =====
+# ===== ПРОВЕРКА ПОДКЛЮЧЕНИЯ К TELEGRAM =====
 try:
     r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=10)
     if r.status_code == 200:
@@ -100,6 +98,7 @@ except Exception as e:
     log(f"❌ Не удалось подключиться к Telegram: {e}")
     sys.exit(1)
 
+# Удаляем вебхук (на всякий случай)
 try:
     requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", timeout=10)
     log("✅ Вебхук удалён")
@@ -154,7 +153,7 @@ def save_schedule(schedule):
     except Exception as e:
         log(f"⚠️ Ошибка сохранения: {e}")
 
-# ===== ГЕНЕРАЦИЯ ТЕКСТА =====
+# ===== ГЕНЕРАЦИЯ ТЕКСТА (рабочая версия из теста) =====
 def generate_post_text(niche, topic):
     log(f"🔤 Генерация текста для {niche}: {topic}")
     system_prompt = (
@@ -193,7 +192,7 @@ def generate_post_text(niche, topic):
         log(f"   ❌ Генерация текста провалилась: {e}")
         return None
 
-# ===== ГЕНЕРАЦИЯ КАРТИНКИ =====
+# ===== ГЕНЕРАЦИЯ КАРТИНКИ (рабочая версия) =====
 def generate_image_agnes(prompt):
     log("   🖼️ Попытка Agnes...")
     if not AGNES_API_KEY:
@@ -309,19 +308,17 @@ def download_image(url):
         log(f"   ❌ Скачивание провалилось: {e}")
         return None
 
-# ===== ПУБЛИКАЦИЯ В VK С ДЕТАЛЬНЫМ ЛОГИРОВАНИЕМ =====
+# ===== ПУБЛИКАЦИЯ В VK (рабочая версия) =====
 def vk_api_request(method, params, token, retries=3):
     base_url = "https://api.vk.com/method/"
     params = params.copy()
     params["access_token"] = token
     params["v"] = "5.131"
-    log(f"   VK запрос: {method}, params: {params}")
     def _do():
         response = requests.get(base_url + method, params=params, timeout=60)
         if response.status_code != 200:
             raise Exception(f"HTTP {response.status_code}")
         json_resp = response.json()
-        log(f"   VK ответ: {json_resp}")
         if "error" in json_resp:
             raise Exception(json_resp["error"]["error_msg"])
         return json_resp["response"]
@@ -337,7 +334,6 @@ def post_to_vk(niche, image_bytes, text):
         return False, f"Ниша '{niche}' не найдена"
     vk_token = VK_ACCOUNTS[niche]["token"]
     group_id = VK_ACCOUNTS[niche]["group_id"]
-    log(f"   group_id = {group_id} (тип {type(group_id)})")
 
     if image_bytes is None:
         log("   Публикация без фото (только текст)")
@@ -349,7 +345,6 @@ def post_to_vk(niche, image_bytes, text):
 
     try:
         # Получение upload_url
-        log(f"   Запрос upload_url для группы {abs(group_id)}")
         upload_resp = vk_api_request("photos.getWallUploadServer", {"group_id": abs(group_id)}, token=vk_token, retries=3)
         if upload_resp is None:
             return False, "Не удалось получить upload_url"
@@ -381,7 +376,6 @@ def post_to_vk(niche, image_bytes, text):
             "photo": up["photo"],
             "hash": up["hash"]
         }
-        log(f"   Сохранение фото: {save_params}")
         save_resp = vk_api_request("photos.saveWallPhoto", save_params, token=vk_token, retries=3)
         if save_resp is None:
             return False, "Ошибка сохранения фото"
@@ -396,7 +390,6 @@ def post_to_vk(niche, image_bytes, text):
             "attachments": attachment,
             "from_group": 1
         }
-        log(f"   Публикация поста: {post_params}")
         post_resp = vk_api_request("wall.post", post_params, token=vk_token, retries=3)
         if post_resp is None:
             return False, "Ошибка публикации поста"
@@ -442,7 +435,7 @@ def execute_scheduled_post(item):
     else:
         log(f"❌ Ошибка публикации: {error}")
 
-# ===== ПЛАНИРОВЩИК =====
+# ===== ПЛАНИРОВЩИК (проверка каждые 30 секунд) =====
 def scheduler_loop():
     log("🔄 Планировщик запущен")
     while True:
@@ -537,7 +530,7 @@ def send_message(chat_id, text):
     except Exception as e:
         log(f"⚠️ Ошибка отправки: {e}")
 
-# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
+# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ (polling) =====
 def get_updates(offset):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
     params = {"offset": offset, "timeout": 10, "allowed_updates": ["message"]}
@@ -545,7 +538,8 @@ def get_updates(offset):
         resp = requests.get(url, params=params, timeout=15)
         if resp.status_code == 200:
             data = resp.json()
-            log(f"📨 Ответ от getUpdates: {data}")
+            # Не логируем каждый ответ, чтобы не засорять
+            # log(f"📨 Ответ от getUpdates: {data}")
             if data.get("result"):
                 return data["result"]
         else:
@@ -558,6 +552,25 @@ def get_updates(offset):
 if __name__ == "__main__":
     log("🤖 Бот запущен, планировщик стартует...")
     threading.Thread(target=scheduler_loop, daemon=True).start()
+
+    # Добавляем тестовые посты во все группы, если расписание пустое
+    schedule = load_schedule()
+    if not schedule:
+        log("🧪 Расписание пустое, добавляем тестовые посты для всех групп через 2 минуты")
+        now_plus_2 = (datetime.now() + timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M")
+        # Добавляем по одному посту для каждой группы
+        for niche in VK_ACCOUNTS.keys():
+            topic = f"Тестовый пост для {niche}"
+            schedule.append({
+                "id": f"test_{niche}_{int(time.time())}",
+                "niche": niche,
+                "topic": topic,
+                "time": now_plus_2,
+                "done": False
+            })
+        save_schedule(schedule)
+        log(f"🧪 Добавлены тестовые посты на {now_plus_2}")
+
     update_id = 0
     while True:
         updates = get_updates(update_id + 1)
@@ -565,4 +578,4 @@ if __name__ == "__main__":
             update_id = upd["update_id"]
             if "message" in upd:
                 process_message(upd["message"])
-        time.sleep(0.5)
+        time.sleep(1)  # опрос каждую секунду
