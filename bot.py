@@ -9,6 +9,10 @@ import re
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+# ===== ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ =====
+sys.stdout.reconfigure(line_buffering=True)
+print("🟢 Health-сервер запущен на порту 8080", flush=True)
+
 # ============================================================
 #  HTTP-СЕРВЕР ДЛЯ HEALTH CHECK
 # ============================================================
@@ -32,7 +36,6 @@ print("🟢 Health-сервер запущен на порту 8080", flush=True
 # ============================================================
 
 print("🚀 Бот запускается...", flush=True)
-sys.stdout.flush()
 
 # ===== ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ =====
 try:
@@ -96,15 +99,21 @@ def load_schedule():
     try:
         if os.path.exists(SCHEDULE_FILE):
             with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                print(f"📂 Загружено расписание: {len(data)} записей", flush=True)
+                return data
+        else:
+            print("📂 Файл расписания не найден, создаётся новый", flush=True)
+            return []
     except Exception as e:
         print(f"⚠️ Ошибка загрузки расписания: {e}", flush=True)
-    return []
+        return []
 
 def save_schedule(schedule):
     try:
         with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
             json.dump(schedule, f, ensure_ascii=False, indent=2)
+        print(f"💾 Сохранено {len(schedule)} записей в расписание", flush=True)
     except Exception as e:
         print(f"⚠️ Ошибка сохранения расписания: {e}", flush=True)
 
@@ -270,12 +279,15 @@ def execute_scheduled_post(item):
         print(f"❌ Ошибка публикации: {error}", flush=True)
 
 def scheduler_loop():
+    print("🔄 Планировщик запущен", flush=True)
     while True:
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            print(f"⏰ Текущее время: {now}", flush=True)
             schedule = load_schedule()
             for item in schedule:
                 if item["time"] == now and not item.get("done", False):
+                    print(f"📢 Найдено задание для выполнения: {item['topic']} в {item['time']}", flush=True)
                     execute_scheduled_post(item)
                     item["done"] = True
                     save_schedule(schedule)
@@ -301,6 +313,7 @@ def process_message(message):
         )
 
     elif text.startswith("/post_in"):
+        print("🔹 Обработка команды /post_in", flush=True)
         parts = text.replace("/post_in", "").strip()
         match = re.search(r'(\d+)$', parts)
         if not match:
@@ -314,16 +327,24 @@ def process_message(message):
             return
         niche = args[0].lower()
         topic = args[1].strip()
+        print(f"   Ниша: {niche}, тема: {topic}, минут: {minutes}", flush=True)
+
         if niche not in VK_ACCOUNTS:
             send_message(chat_id, f"❌ Ниша '{niche}' не найдена. Доступны: {', '.join(VK_ACCOUNTS.keys())}")
             return
+
         publish_time = datetime.now() + timedelta(minutes=minutes)
         full_time = publish_time.strftime("%Y-%m-%d %H:%M")
+        print(f"   Время публикации: {full_time}", flush=True)
+
         schedule = load_schedule()
+        print(f"   Текущее расписание: {len(schedule)} записей", flush=True)
+
         new_id = str(int(time.time()))
         schedule.append({"id": new_id, "niche": niche, "topic": topic, "time": full_time, "done": False})
         save_schedule(schedule)
         send_message(chat_id, f"✅ Пост добавлен: [{niche}] {topic} в {full_time} (через {minutes} мин)")
+        print(f"✅ Пост добавлен: [{niche}] {topic} в {full_time}", flush=True)
 
     elif text.startswith("/add"):
         parts = text.split(maxsplit=4)
@@ -397,7 +418,10 @@ def get_updates(offset):
     try:
         resp = requests.get(url, params=params, timeout=35)
         if resp.status_code == 200:
-            return resp.json().get("result", [])
+            data = resp.json()
+            if data.get("result"):
+                print(f"📥 Получено {len(data['result'])} обновлений", flush=True)
+            return data.get("result", [])
         else:
             print(f"⚠️ Ошибка getUpdates: {resp.status_code} {resp.text}", flush=True)
             return []
