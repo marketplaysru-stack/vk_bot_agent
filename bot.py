@@ -11,7 +11,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ===== ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ =====
 sys.stdout.reconfigure(line_buffering=True)
-print("🟢 Health-сервер запущен на порту 8080", flush=True)
 
 # ============================================================
 #  HTTP-СЕРВЕР ДЛЯ HEALTH CHECK
@@ -99,21 +98,15 @@ def load_schedule():
     try:
         if os.path.exists(SCHEDULE_FILE):
             with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                print(f"📂 Загружено расписание: {len(data)} записей", flush=True)
-                return data
-        else:
-            print("📂 Файл расписания не найден, создаётся новый", flush=True)
-            return []
+                return json.load(f)
     except Exception as e:
         print(f"⚠️ Ошибка загрузки расписания: {e}", flush=True)
-        return []
+    return []
 
 def save_schedule(schedule):
     try:
         with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
             json.dump(schedule, f, ensure_ascii=False, indent=2)
-        print(f"💾 Сохранено {len(schedule)} записей в расписание", flush=True)
     except Exception as e:
         print(f"⚠️ Ошибка сохранения расписания: {e}", flush=True)
 
@@ -279,15 +272,12 @@ def execute_scheduled_post(item):
         print(f"❌ Ошибка публикации: {error}", flush=True)
 
 def scheduler_loop():
-    print("🔄 Планировщик запущен", flush=True)
     while True:
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
-            print(f"⏰ Текущее время: {now}", flush=True)
             schedule = load_schedule()
             for item in schedule:
                 if item["time"] == now and not item.get("done", False):
-                    print(f"📢 Найдено задание для выполнения: {item['topic']} в {item['time']}", flush=True)
                     execute_scheduled_post(item)
                     item["done"] = True
                     save_schedule(schedule)
@@ -300,8 +290,17 @@ def process_message(message):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
     print(f"📩 Получено сообщение от {chat_id}: {text}", flush=True)
+    print(f"🔍 Текст сообщения (длина={len(text)}): '{text}'", flush=True)
 
-    if text.startswith("/start"):
+    if not text:
+        print("⚠️ Пустое сообщение", flush=True)
+        return
+
+    # Нормализуем текст: убираем лишние пробелы, переводим в нижний регистр для сравнения (но для команд сохраняем регистр, чтобы не потерять данные)
+    text_lower = text.lower()
+
+    if text_lower.startswith("/start"):
+        print("🔹 Команда /start", flush=True)
         send_message(chat_id,
             "👋 Бот для генерации рекламных постов.\n"
             "/post_in ниша тема минуты — пост через N минут\n"
@@ -311,10 +310,13 @@ def process_message(message):
             "/remove ID — удалить пост\n"
             "Доступны: родительский, строительный, ai"
         )
+        return
 
-    elif text.startswith("/post_in"):
+    if text_lower.startswith("/post_in"):
         print("🔹 Обработка команды /post_in", flush=True)
-        parts = text.replace("/post_in", "").strip()
+        # Извлекаем часть после команды
+        parts = text[len("/post_in"):].strip()
+        print(f"   Часть после команды: '{parts}'", flush=True)
         match = re.search(r'(\d+)$', parts)
         if not match:
             send_message(chat_id, "❌ Укажи число минут в конце, например: /post_in ai Нейросети 5")
@@ -327,7 +329,7 @@ def process_message(message):
             return
         niche = args[0].lower()
         topic = args[1].strip()
-        print(f"   Ниша: {niche}, тема: {topic}, минут: {minutes}", flush=True)
+        print(f"   Ниша: '{niche}', тема: '{topic}', минут: {minutes}", flush=True)
 
         if niche not in VK_ACCOUNTS:
             send_message(chat_id, f"❌ Ниша '{niche}' не найдена. Доступны: {', '.join(VK_ACCOUNTS.keys())}")
@@ -338,15 +340,15 @@ def process_message(message):
         print(f"   Время публикации: {full_time}", flush=True)
 
         schedule = load_schedule()
-        print(f"   Текущее расписание: {len(schedule)} записей", flush=True)
-
         new_id = str(int(time.time()))
         schedule.append({"id": new_id, "niche": niche, "topic": topic, "time": full_time, "done": False})
         save_schedule(schedule)
         send_message(chat_id, f"✅ Пост добавлен: [{niche}] {topic} в {full_time} (через {minutes} мин)")
         print(f"✅ Пост добавлен: [{niche}] {topic} в {full_time}", flush=True)
+        return
 
-    elif text.startswith("/add"):
+    if text_lower.startswith("/add"):
+        print("🔹 Команда /add", flush=True)
         parts = text.split(maxsplit=4)
         if len(parts) < 5:
             send_message(chat_id, "❌ Формат: /add ниша тема ГГГГ-ММ-ДД ЧЧ:ММ\nНапример: /add ai Нейросети 2026-07-21 13:05")
@@ -369,8 +371,10 @@ def process_message(message):
         schedule.append({"id": new_id, "niche": niche, "topic": topic, "time": full_time, "done": False})
         save_schedule(schedule)
         send_message(chat_id, f"✅ Пост добавлен: [{niche}] {topic} на {full_time}")
+        return
 
-    elif text.startswith("/list"):
+    if text_lower.startswith("/list"):
+        print("🔹 Команда /list", flush=True)
         schedule = load_schedule()
         if not schedule:
             send_message(chat_id, "📭 Нет запланированных постов")
@@ -380,8 +384,10 @@ def process_message(message):
             status = "✅" if item.get("done") else "⏳"
             lines.append(f"{status} ID:{item['id']} [{item['niche']}] {item['topic']} -> {item['time']}")
         send_message(chat_id, "\n".join(lines[:10]))
+        return
 
-    elif text.startswith("/remove"):
+    if text_lower.startswith("/remove"):
+        print("🔹 Команда /remove", flush=True)
         parts = text.split()
         if len(parts) < 2:
             send_message(chat_id, "❌ Укажи ID поста: /remove 123456")
@@ -394,8 +400,10 @@ def process_message(message):
             return
         save_schedule(new_schedule)
         send_message(chat_id, f"✅ Пост {post_id} удалён")
+        return
 
-    elif text.startswith("/help"):
+    if text_lower.startswith("/help"):
+        print("🔹 Команда /help", flush=True)
         send_message(chat_id,
             "📌 Команды:\n"
             "/post_in ниша тема минуты — пост через N минут\n"
@@ -403,6 +411,9 @@ def process_message(message):
             "/list — список постов\n"
             "/remove ID — удалить пост"
         )
+        return
+
+    print(f"⚠️ Неизвестная команда: {text}", flush=True)
 
 def send_message(chat_id, text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
