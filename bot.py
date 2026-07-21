@@ -12,7 +12,7 @@ from telebot import apihelper
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ============================================================
-#  HTTP-СЕРВЕР ДЛЯ HEALTH CHECK
+#  HTTP-СЕРВЕР ДЛЯ HEALTH CHECK (чтобы Ботхост не ругался)
 # ============================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -21,12 +21,13 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
     
     def log_message(self, format, *args):
-        pass
+        pass  # отключаем логи сервера
 
 def run_health_server():
     server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
     server.serve_forever()
 
+# Запускаем health-сервер в отдельном потоке
 health_thread = threading.Thread(target=run_health_server, daemon=True)
 health_thread.start()
 print("🟢 Health-сервер запущен на порту 8080", flush=True)
@@ -388,8 +389,8 @@ if __name__ == "__main__":
     print("🤖 Бот запущен...", flush=True)
     # Запускаем планировщик
     threading.Thread(target=scheduler_loop, daemon=True).start()
+    print("🔄 Запуск polling...", flush=True)
     try:
-        print("🔄 Запуск polling...", flush=True)
         bot.polling(none_stop=True)
     except Exception as e:
         print(f"❌ Ошибка в polling: {e}", flush=True)
