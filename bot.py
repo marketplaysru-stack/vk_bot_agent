@@ -91,7 +91,6 @@ except Exception as e:
     print(f"⚠️ Ошибка удаления вебхука: {e}", flush=True)
 
 SCHEDULE_FILE = "schedule.json"
-last_update_id = 0
 
 # ================ ФУНКЦИИ ================
 def load_schedule():
@@ -287,7 +286,7 @@ def scheduler_loop():
             print(f"⚠️ Ошибка в планировщике: {e}", flush=True)
         time.sleep(30)
 
-# ================ ОБРАБОТЧИКИ КОМАНД (ручной polling) ================
+# ================ ОБРАБОТЧИКИ КОМАНД ================
 def process_message(message):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
@@ -314,13 +313,14 @@ def process_message(message):
             return
         minutes = int(match.group(1))
         rest = parts[:match.start()].strip()
-        args = rest.split(maxsplit=1)
-        if len(args) < 2:
+        # Разбиваем на нишу и тему: первое слово — ниша, всё остальное — тема
+        first_space = rest.find(' ')
+        if first_space == -1:
             send_message(chat_id, "❌ Формат: /post_in ниша тема минуты\nНапример: /post_in ai Нейросети 5")
             return
-        niche = args[0].lower()
-        topic = args[1].strip()
-        print(f"   Ниша: {niche}, тема: {topic}, минут: {minutes}", flush=True)
+        niche = rest[:first_space].lower()
+        topic = rest[first_space+1:].strip()
+        print(f"   Ниша: '{niche}', тема: '{topic}', минут: {minutes}", flush=True)
 
         if niche not in VK_ACCOUNTS:
             send_message(chat_id, f"❌ Ниша '{niche}' не найдена. Доступны: {', '.join(VK_ACCOUNTS.keys())}")
@@ -336,10 +336,6 @@ def process_message(message):
         print(f"✅ Пост добавлен: [{niche}] {topic} в {full_time}", flush=True)
         return
 
-    if text.startswith("/add"):
-        # ... (аналогично, но для краткости опустим, так как основная команда — /post_in)
-        pass
-
     if text.startswith("/list"):
         schedule = load_schedule()
         if not schedule:
@@ -353,8 +349,19 @@ def process_message(message):
         return
 
     if text.startswith("/remove"):
-        # ... (аналогично)
-        pass
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "❌ Укажи ID поста: /remove 123456")
+            return
+        post_id = parts[1]
+        schedule = load_schedule()
+        new_schedule = [item for item in schedule if item["id"] != post_id]
+        if len(new_schedule) == len(schedule):
+            send_message(chat_id, "❌ Пост с таким ID не найден")
+            return
+        save_schedule(new_schedule)
+        send_message(chat_id, f"✅ Пост {post_id} удалён")
+        return
 
     if text.startswith("/help"):
         send_message(chat_id,
@@ -378,20 +385,16 @@ def get_updates(offset):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
     params = {"offset": offset, "timeout": 30, "allowed_updates": ["message"]}
     try:
-        print(f"📤 Запрос getUpdates с offset={offset}", flush=True)
         resp = requests.get(url, params=params, timeout=35)
-        print(f"📥 Статус ответа: {resp.status_code}", flush=True)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("result"):
-                print(f"📥 Получено {len(data['result'])} обновлений", flush=True)
-            return data.get("result", [])
+                return data["result"]
+            else:
+                return []
         else:
-            print(f"⚠️ Ошибка getUpdates: {resp.status_code} {resp.text[:200]}", flush=True)
+            print(f"⚠️ Ошибка getUpdates: {resp.status_code}", flush=True)
             return []
-    except requests.exceptions.Timeout:
-        print("⚠️ Таймаут при запросе getUpdates", flush=True)
-        return []
     except Exception as e:
         print(f"⚠️ Ошибка при получении обновлений: {e}", flush=True)
         return []
@@ -399,10 +402,8 @@ def get_updates(offset):
 # ================ ЗАПУСК ================
 if __name__ == "__main__":
     print("🤖 Бот запущен...", flush=True)
-    # Запускаем планировщик
     threading.Thread(target=scheduler_loop, daemon=True).start()
     
-    # Основной цикл polling
     update_id = 0
     while True:
         updates = get_updates(update_id + 1)
