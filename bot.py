@@ -61,7 +61,7 @@ except ValueError:
 if not AGNES_API_KEY:
     log("⚠️ AGNES_API_KEY не задан (картинки через Pollinations)")
 
-log("🚀 Запуск бота для AI-навигатора (с улучшенными картинками)")
+log("🚀 Запуск бота для AI-навигатора (гиперреалистичные промпты)")
 log(f"📌 Группа ID: {VK_GROUP_ID}")
 
 # ===== ПУТЬ К ФАЙЛУ РАСПИСАНИЯ =====
@@ -192,28 +192,35 @@ def generate_post_text(topic):
         return None
 
 # ============================================================
-# ===== УЛУЧШЕННАЯ ГЕНЕРАЦИЯ КАРТИНОК (РЕКЛАМНЫЙ ФОРМАТ) =====
+# ===== УЛУЧШЕННАЯ ГЕНЕРАЦИЯ КАРТИНОК (ГИПЕРРЕАЛИЗМ) =====
 # ============================================================
 
 def build_image_prompt(topic):
     """
-    Формирует детализированный промпт для генерации рекламного изображения.
+    Формирует высокодетализированный кинематографический промпт,
+    адаптированный под тему поста, с акцентом на фотореализм, драматическое освещение,
+    профессиональный стиль, без текста.
     """
-    base_prompt = (
-        f"Создай профессиональное рекламное изображение для поста на тему: '{topic}'. "
-        "Изображение должно быть высокодетализированным, фотографического качества (фотореализм), с яркими насыщенными цветами, "
-        "идеально сбалансированной композицией и кинематографическим освещением. "
-        "Стиль: современный, минималистичный, привлекающий внимание, подходящий для социальных сетей. "
-        "Цветовая гамма: контрастная, с акцентными элементами. "
-        "Изображение должно вызывать эмоции и вдохновлять на действие. "
-        "Формат: квадратный (1:1), подходит для обложки поста ВКонтакте. "
-        "Без текста, только визуал. "
-        "Качество: 4K, ультра-детализированное, с высокой чёткостью и резкостью."
+    base = (
+        f"Hyperrealistic cinematic photograph, square 1:1 format, {topic}. "
+        "Professionally styled composition, dramatic lighting with high contrast, "
+        "cinematic color grading (rich reds, deep blues, warm golden highlights), "
+        "shallow depth of field, sharp focus on the main subject, "
+        "ultra-detailed textures (skin pores, fabric weaves, reflections), "
+        "8K resolution, photorealistic, no text or typography, "
+        "editorial quality, reminiscent of high-end fashion or product photography, "
+        "emotionally compelling, vibrant yet natural colors, "
+        "background softly blurred, spotlight effect, "
+        "modern aesthetic, perfect for social media cover, "
+        "professional retouching, no plastic or artificial look, "
+        "captured with Hasselblad H6D, 100mm lens, f/2.8, "
+        "natural motion frozen, dynamic energy, "
+        "atmospheric haze, subtle lens flare."
     )
-    return base_prompt
+    return base
 
 def generate_image_agnes(prompt):
-    log("   🖼️ Попытка Agnes (улучшенный промпт)...")
+    log("   🖼️ Попытка Agnes (гиперреалистичный промпт)...")
     if not AGNES_API_KEY:
         log("   AGNES_API_KEY не задан")
         return None
@@ -221,7 +228,7 @@ def generate_image_agnes(prompt):
     data = {
         "model": "agnes-image-2.1-flash",
         "prompt": prompt,
-        "size": "1024x1024",   # можно попробовать 1536x1536, но не все модели поддерживают
+        "size": "1024x1024",
         "n": 1
     }
     def _do():
@@ -246,7 +253,7 @@ def generate_image_agnes(prompt):
         return None
 
 def generate_image_gigachat(prompt):
-    log("   🖼️ Попытка GigaChat (улучшенный промпт)...")
+    log("   🖼️ Попытка GigaChat (гиперреалистичный промпт)...")
     if not GIGACHAT_API_KEY:
         log("   GIGACHAT_API_KEY не задан")
         return None
@@ -282,11 +289,10 @@ def generate_image_gigachat(prompt):
         return None
 
 def generate_image_pollinations(prompt):
-    log("   🖼️ Попытка Pollinations (улучшенный промпт)...")
+    log("   🖼️ Попытка Pollinations (гиперреалистичный промпт)...")
     try:
-        # Добавляем параметры качества для Pollinations (если поддерживаются)
         prompt_encoded = urllib.parse.quote(prompt)
-        # Можно добавить &model=flux или &model=sd3 для лучшего качества, но не факт, что они доступны
+        # Добавляем параметры для повышения качества (если поддерживаются)
         url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
         log("   ✅ URL сформирован")
         return url
@@ -295,9 +301,9 @@ def generate_image_pollinations(prompt):
         return None
 
 def generate_image(topic):
-    log(f"🖼️ Генерация рекламной картинки для темы: {topic}")
+    log(f"🖼️ Генерация гиперреалистичной картинки для темы: {topic}")
     prompt = build_image_prompt(topic)
-    log(f"   Промпт: {prompt[:150]}...")
+    log(f"   Промпт: {prompt[:200]}...")
 
     # Цепочка источников
     url = generate_image_agnes(prompt)
@@ -472,7 +478,7 @@ def execute_scheduled_post(item):
         return
     log(f"✅ Текст получен, длина {len(post_text)}")
 
-    log("🖼️ Шаг 2: Генерация картинки (улучшенный промпт)...")
+    log("🖼️ Шаг 2: Генерация гиперреалистичной картинки...")
     image_url = generate_image(topic)
     image_bytes = None
     if image_url:
@@ -526,7 +532,8 @@ def process_message(message):
 
     if text.startswith("/start"):
         send_message(chat_id,
-            "👋 Бот для автопостинга в AI-навигатор (с крутыми картинками).\n"
+            "👋 Бот для автопостинга в AI-навигатор.\n"
+            "Генерация гиперреалистичных картинок.\n"
             "/post_in тема минуты — добавить пост через N минут\n"
             "/run_now тема — опубликовать прямо сейчас\n"
             "/list — показать все задания\n"
@@ -552,7 +559,7 @@ def process_message(message):
                 image_bytes = download_image(image_url)
             success, error = post_to_vk(image_bytes, post_text)
             if success:
-                send_message(chat_id, f"✅ Пост опубликован с крутой картинкой!")
+                send_message(chat_id, f"✅ Пост опубликован!")
             else:
                 send_message(chat_id, f"❌ Ошибка публикации: {error}")
         threading.Thread(target=publish).start()
@@ -638,7 +645,7 @@ def add_test_post_if_empty():
         schedule.append({
             "id": f"test_ai_{int(time.time())}",
             "niche": "ai",
-            "topic": "Тестовый пост с крутой картинкой для AI-навигатора",
+            "topic": "Гиперреалистичный тест: брендинг и маркетинг",
             "time": test_time,
             "done": False
         })
@@ -647,7 +654,7 @@ def add_test_post_if_empty():
 
 # ===== ГЛАВНЫЙ ЦИКЛ =====
 if __name__ == "__main__":
-    log("🤖 Бот для AI-навигатора (улучшенные картинки) запущен")
+    log("🤖 Бот для AI-навигатора (гиперреалистичные картинки) запущен")
     add_test_post_if_empty()
     threading.Thread(target=scheduler_loop, daemon=True).start()
     update_id = 0
