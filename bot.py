@@ -581,15 +581,15 @@ def send_message(chat_id, text):
     except Exception as e:
         log(f"⚠️ Ошибка отправки: {e}")
 
-# ===== ИСПРАВЛЕННАЯ ФУНКЦИЯ get_updates (с логированием) =====
+# ===== ФУНКЦИЯ get_updates С УЛУЧШЕННЫМ ОПРОСОМ =====
 def get_updates(offset):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    params = {"offset": offset, "timeout": 30, "allowed_updates": ["message"]}
+    params = {"offset": offset, "timeout": 10, "allowed_updates": ["message"]}  # уменьшили таймаут
     try:
-        resp = requests.get(url, params=params, timeout=35)
+        resp = requests.get(url, params=params, timeout=15)
         if resp.status_code == 200:
             data = resp.json()
-            log(f"📨 Ответ от getUpdates: {data}")   # <-- НОВАЯ СТРОКА
+            log(f"📨 Ответ от getUpdates: {data}")
             if data.get("result"):
                 return data["result"]
         else:
@@ -609,4 +609,4 @@ if __name__ == "__main__":
             update_id = upd["update_id"]
             if "message" in upd:
                 process_message(upd["message"])
-        time.sleep(1)
+        time.sleep(0.5)  # уменьшили задержку
