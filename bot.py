@@ -1,282 +1,398 @@
 import os
-import sys
-import threading
-import re
+import telebot
 import requests
+import json
+import urllib.parse
+import threading
 import time
+import re
 from datetime import datetime, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import vk_api
-from vk_api.longpoll import VkLongPoll, VkEventType
+from telebot import apihelper
 
-sys.stderr = sys.stdout
+# ============================================================
+#  ЧТЕНИЕ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ (НАСТРАИВАЕТСЯ НА БОТХОСТЕ)
+# ============================================================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+AGNES_API_KEY = os.getenv("AGNES_API_KEY")
 
-print("🔹 Бот-менеджер (упрощённый парсинг)", flush=True)
+# Проверка обязательных переменных
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN не задан в переменных окружения")
+if not AGNES_API_KEY:
+    raise ValueError("❌ AGNES_API_KEY не задан в переменных окружения")
 
-# ===== Health-сервер =====
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
+# ====== ТОКЕНЫ И ID ГРУПП ИЗ ПЕРЕМЕННЫХ ======
+VK_ACCOUNTS = {
+    "родительский": {
+        "token": os.getenv("VK_TOKEN_РОДИТЕЛЬСКИЙ", ""),
+        "group_id": int(os.getenv("VK_GROUP_ID_РОДИТЕЛЬСКИЙ", "0"))
+    },
+    "строительный": {
+        "token": os.getenv("VK_TOKEN_СТРОИТЕЛЬНЫЙ", ""),
+        "group_id": int(os.getenv("VK_GROUP_ID_СТРОИТЕЛЬНЫЙ", "0"))
+    },
+    "ai": {
+        "token": os.getenv("VK_TOKEN_AI", ""),
+        "group_id": int(os.getenv("VK_GROUP_ID_AI", "0"))
+    }
+}
+# Удаляем группы, у которых нет токена или ID
+VK_ACCOUNTS = {k: v for k, v in VK_ACCOUNTS.items() if v["token"] and v["group_id"] != 0}
 
-def run_health():
-    server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
-    print("🟢 Health-сервер запущен", flush=True)
-    server.serve_forever()
+if not VK_ACCOUNTS:
+    raise ValueError("❌ Нет ни одной настроенной группы ВКонтакте. Проверьте переменные VK_TOKEN_* и VK_GROUP_ID_*")
 
-# ===== Проверка переменных =====
-TOKEN = os.getenv('VK_TOKEN')
-if not TOKEN:
-    print("❌ VK_TOKEN не задан", flush=True)
-    sys.exit(1)
-print(f"✅ VK_TOKEN получен (первые 10 символов): {TOKEN[:10]}", flush=True)
+print(f"✅ Загружено групп: {len(VK_ACCOUNTS)}")
+for name, data in VK_ACCOUNTS.items():
+    print(f"   - {name}: group_id={data['group_id']}")
 
-GIGACHAT_API_KEY = os.getenv('GIGACHAT_API_KEY')
-if GIGACHAT_API_KEY:
-    print("✅ GIGACHAT_API_KEY получен", flush=True)
-else:
-    print("⚠️ GIGACHAT_API_KEY не задан — будет использован шаблонный текст", flush=True)
+# ============================================================
 
-groups = []
-group_names = ['родительский', 'строительный', 'ai']
-for i, name in enumerate(group_names, 1):
-    token = os.getenv(f'VK_TOKEN_{i}')
-    gid = os.getenv(f'GROUP_ID_{i}')
-    if token and gid:
-        groups.append({
-            'name': name,
-            'id': int(gid),
-            'token': token
-        })
-        print(f"✅ Группа {i} ({name}): ID={gid}", flush=True)
-    else:
-        print(f"⚠️ Группа {i} ({name}) не настроена", flush=True)
+SCHEDULE_FILE = "schedule.json"
 
-if not groups:
-    print("❌ Нет ни одной настроенной группы", flush=True)
-    sys.exit(1)
+apihelper.CONNECT_TIMEOUT = 60
+apihelper.READ_TIMEOUT = 120
 
-# ===== Функция генерации текста =====
-def generate_text(topic):
-    print(f"   🔤 Генерация текста для: {topic}", flush=True)
-    if GIGACHAT_API_KEY:
-        headers = {
-            "Authorization": f"Bearer {GIGACHAT_API_KEY}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-        data = {
-            "model": "GigaChat",
-            "messages": [
-                {"role": "system", "content": "Ты — профессиональный SMM-менеджер. Напиши пост для ВКонтакте на заданную тему. Длина до 200 слов. Добавь 5 хештегов."},
-                {"role": "user", "content": f"Тема: {topic}"}
-            ],
-            "temperature": 0.8
-        }
-        try:
-            print("   🔤 Отправка запроса к GigaChat...", flush=True)
-            resp = requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions", headers=headers, json=data, timeout=60)
-            print(f"   🔤 Ответ получен, статус: {resp.status_code}", flush=True)
-            resp.raise_for_status()
-            return resp.json()['choices'][0]['message']['content']
-        except Exception as e:
-            print(f"   ❌ Ошибка GigaChat: {e}", flush=True)
-    # Fallback
-    print("   ⚠️ Использую шаблонный текст", flush=True)
-    return f"Это тестовый пост на тему: {topic}. #тест #бот #автоматизация #SMM #ВКонтакте"
+bot = telebot.TeleBot(BOT_TOKEN)
 
-# ===== Загрузка медиа =====
-def download_media(url):
+# ================ ЗАГРУЗКА / СОХРАНЕНИЕ РАСПИСАНИЯ ================
+def load_schedule():
+    if os.path.exists(SCHEDULE_FILE):
+        with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+def save_schedule(schedule):
+    with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+        json.dump(schedule, f, ensure_ascii=False, indent=2)
+
+# ================ ГЕНЕРАЦИЯ ТЕКСТА ================
+def generate_post_text(niche, topic):
+    system_prompt = (
+        "Ты — профессиональный SMM-менеджер и копирайтер. "
+        "Напиши яркий, вовлекающий пост для ВКонтакте по заданной теме и нише. "
+        "Пост должен быть продающим, полезным и побуждать к действию. "
+        "Используй структуру: цепляющий заголовок (до 10 слов) → проблема аудитории → решение → практическая польза → призыв к действию. "
+        "Добавь эмодзи (🔥, 💡, 🚀, ✨, 📌 и т.д.), разбей на короткие абзацы. "
+        "В конце добавь 5 релевантных хештегов. Пиши человечно, без канцелярита, с душой."
+    )
+    user_prompt = f"Ниша: {niche}\nТема: {topic}\n\nНапиши пост, который заставит читателя остановиться, прочитать и что-то сделать."
+    headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
+    data = {
+        "model": "agnes-2.0-flash",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.85
+    }
     try:
-        resp = requests.get(url, stream=True, timeout=60)
-        resp.raise_for_status()
-        content_type = resp.headers.get('content-type', '')
-        if 'image' in content_type:
-            ext = 'jpg'
-        elif 'video' in content_type:
-            ext = 'mp4'
-        else:
-            ext = 'bin'
-        filename = f"temp_media_{int(time.time())}.{ext}"
-        with open(filename, 'wb') as f:
-            for chunk in resp.iter_content(8192):
-                f.write(chunk)
-        return filename
-    except Exception as e:
-        print(f"   ❌ Ошибка скачивания медиа: {e}", flush=True)
-        return None
-
-def upload_photo(vk, group_id, filepath):
-    try:
-        upload_server = vk.photos.getWallUploadServer(group_id=abs(group_id))
-        upload_url = upload_server['upload_url']
-        with open(filepath, 'rb') as f:
-            files = {'photo': f}
-            resp = requests.post(upload_url, files=files).json()
-        save_params = {
-            'server': resp['server'],
-            'photo': resp['photo'],
-            'hash': resp['hash'],
-            'group_id': abs(group_id)
-        }
-        saved = vk.photos.saveWallPhoto(**save_params)[0]
-        return f"photo{saved['owner_id']}_{saved['id']}"
-    except Exception as e:
-        print(f"   ❌ Ошибка загрузки фото: {e}", flush=True)
-        return None
-
-def upload_video(vk, group_id, filepath):
-    try:
-        upload_data = vk.video.save(
-            name='Видео',
-            group_id=abs(group_id),
-            privacy_view='all',
-            privacy_comment='all'
+        response = requests.post(
+            "https://apihub.agnes-ai.com/v1/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=120
         )
-        upload_url = upload_data['upload_url']
-        with open(filepath, 'rb') as f:
-            files = {'video_file': f}
-            resp = requests.post(upload_url, files=files).json()
-        owner_id = resp.get('owner_id')
-        video_id = resp.get('video_id') or resp.get('id')
-        if owner_id and video_id:
-            return f"video{owner_id}_{video_id}"
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"]
         else:
+            print(f"[DEBUG] Ошибка текста: {response.status_code}")
             return None
     except Exception as e:
-        print(f"   ❌ Ошибка загрузки видео: {e}", flush=True)
+        print(f"[DEBUG] Текст ошибка: {e}")
         return None
 
-def create_post(group, text, minutes, attachment):
-    try:
-        vk = vk_api.VkApi(token=group['token']).get_api()
-        publish_time = datetime.now() + timedelta(minutes=minutes)
-        publish_timestamp = int(publish_time.timestamp())
-        vk.wall.post(
-            owner_id=group['id'],
-            message=text,
-            attachments=attachment,
-            publish_date=publish_timestamp,
-            from_group=1
+# ================ ГЕНЕРАЦИЯ КАРТИНКИ ================
+def get_image_prompt(niche, topic):
+    base_prompt = {
+        "родительский": (
+            f"Счастливая семья — мама, папа и двое детей — сидят за уютным столом в светлой гостиной. "
+            f"На стене висит календарь с яркими стикерами, на столе лежат книжки и планшет с развивающей игрой. "
+            f"Рядом — кружка с чаем и улыбающийся плюшевый мишка. "
+            f"Сюжет поста: {topic}. "
+            "Стиль: фотореализм, тёплые цвета, семейна� атмосфера. "
+            "Добавь элементы: иконка сердца ❤️, звездочки ✨, яркие акценты (оранжевый, жёлтый). "
+            "Формат: 1:1, высокое качество, 8K. Без текста на картинке."
+        ),
+        "строительный": (
+            f"Профессиональный строитель в каске и жилете стоит на фоне современного строящегося дома. "
+            f"Рядом лежат инструменты: уровень, рулетка, дрель. "
+            f"На заднем плане — синее небо и кран. "
+            f"Сюжет поста: {topic}. "
+            "Стиль: индустриальный, чёткие линии, контрастные цвета (синий, оранжевый, серый). "
+            "Добавь иконки: молоток 🔨, каска, гаечный ключ. "
+            "Формат: 1:1, высокое разрешение, 8K. Без текста."
+        ),
+        "ai": (
+            f"Минималистичный рабочий стол с мощным ноутбуком, на экране — яркая схема нейросети с разноцветными связями. "
+            f"Рядом стоят кофе, беспроводные наушники и стильный смартфон. "
+            f"В воздухе парят иконки: ⚡, 💡, 🧠, 📊. "
+            f"Сюжет поста: {topic}. "
+            "Стиль: футуристичный, глянцевый, неоновые цвета (синий, фиолетовый, бирюзовый). "
+            "Формат: 1:1, высокое качество, 4K. Без текста."
         )
-        return True
-    except Exception as e:
-        print(f"   ❌ Ошибка создания поста в группе {group['id']}: {e}", flush=True)
-        return False
+    }
+    return base_prompt.get(niche, f"Яркая рекламная картинка на тему: {topic}. Современный стиль, 1:1, без текста.")
 
-# ===== Основная логика =====
-def run_bot():
+def generate_image(niche, topic):
+    prompt = get_image_prompt(niche, topic)
+    headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
+    data = {
+        "model": "agnes-image-2.1-flash",
+        "prompt": prompt,
+        "size": "1024x1024",
+        "n": 1,
+        "style": "vibrant"
+    }
     try:
-        vk_session = vk_api.VkApi(token=TOKEN)
-        longpoll = VkLongPoll(vk_session)
-        print("✅ Бот-менеджер запущен и ждёт команды...", flush=True)
-
-        for event in longpoll.listen():
-            if event.type == VkEventType.MESSAGE_NEW and event.to_me:
-                msg_raw = event.text.strip()
-                msg = msg_raw.replace('&quot;', '"').replace('&amp;', '&')
-                user_id = event.user_id
-                print(f"📩 Получено: {msg}", flush=True)
-
-                if msg.lower() == 'привет':
-                    vk_session.method('messages.send', {
-                        'user_id': user_id,
-                        'message': 'Привет! Я бот-менеджер (упрощённый формат).\nКоманда: пост в Название на тему ... через X минут\nПример: пост в Родительский на тему Как помочь ребёнку через 2 минуты',
-                        'random_id': 0
-                    })
-                    continue
-
-                elif msg.lower().startswith('пост в'):
-                    match_group = re.search(r'пост в (.+?) на тему ', msg, re.I)
-                    match_topic = re.search(r'на тему (.+?) через \d+ минут', msg, re.I)
-                    match_time = re.search(r'через (\d+) минут', msg, re.I)
-                    match_media = re.search(r'(?:с фото|с видео)\s+(https?://[^\s]+)', msg, re.I)
-
-                    if not match_group or not match_topic or not match_time:
-                        vk_session.method('messages.send', {
-                            'user_id': user_id,
-                            'message': '❌ Формат: пост в Название на тему Текст через X минут\nПример: пост в Родительский на тему Как помочь ребёнку через 2 минуты',
-                            'random_id': 0
-                        })
-                        continue
-
-                    group_name = match_group.group(1).strip().lower()
-                    topic = match_topic.group(1).strip()
-                    minutes = int(match_time.group(1))
-
-                    group = next((g for g in groups if g['name'] == group_name), None)
-                    if not group:
-                        vk_session.method('messages.send', {
-                            'user_id': user_id,
-                            'message': f'❌ Группа "{group_name}" не найдена. Доступны: ' + ', '.join([g['name'] for g in groups]),
-                            'random_id': 0
-                        })
-                        continue
-
-                    vk_session.method('messages.send', {
-                        'user_id': user_id,
-                        'message': '⏳ Генерирую текст и загружаю медиа... (до 30 сек)',
-                        'random_id': 0
-                    })
-
-                    text = generate_text(topic)
-                    if not text:
-                        vk_session.method('messages.send', {
-                            'user_id': user_id,
-                            'message': '❌ Не удалось сгенерировать текст.',
-                            'random_id': 0
-                        })
-                        continue
-
-                    attachment = None
-                    if match_media:
-                        media_url = match_media.group(1)
-                        print(f"📥 Скачивание медиа: {media_url}", flush=True)
-                        filepath = download_media(media_url)
-                        if filepath:
-                            print("📤 Загрузка медиа на сервер ВК...", flush=True)
-                            if filepath.endswith(('.jpg', '.jpeg', '.png', '.gif')):
-                                vk_group = vk_api.VkApi(token=group['token']).get_api()
-                                attachment = upload_photo(vk_group, group['id'], filepath)
-                            elif filepath.endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')):
-                                vk_group = vk_api.VkApi(token=group['token']).get_api()
-                                attachment = upload_video(vk_group, group['id'], filepath)
-                            if attachment:
-                                print(f"   ✅ Медиа загружено: {attachment}", flush=True)
-                            else:
-                                print("   ⚠️ Не удалось загрузить медиа", flush=True)
-                        else:
-                            print("   ⚠️ Не удалось скачать медиа", flush=True)
-
-                    success = create_post(group, text, minutes, attachment)
-                    if success:
-                        vk_session.method('messages.send', {
-                            'user_id': user_id,
-                            'message': f'✅ Пост для группы "{group_name}" создан. Опубликуется через {minutes} мин.',
-                            'random_id': 0
-                        })
-                    else:
-                        vk_session.method('messages.send', {
-                            'user_id': user_id,
-                            'message': f'❌ Ошибка создания поста в группе "{group_name}".',
-                            'random_id': 0
-                        })
-                    continue
-
-                else:
-                    vk_session.method('messages.send', {
-                        'user_id': user_id,
-                        'message': 'Не знаю команды. Напиши "привет" или "пост в ..."',
-                        'random_id': 0
-                    })
-
+        response = requests.post(
+            "https://apihub.agnes-ai.com/v1/images/generations",
+            headers=headers,
+            json=data,
+            timeout=120
+        )
+        if response.status_code == 200:
+            return response.json()["data"][0]["url"]
+        else:
+            print(f"[DEBUG] Agnes ошибка: {response.status_code}")
+            prompt_encoded = urllib.parse.quote(prompt)
+            return f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
     except Exception as e:
-        print(f"❌ Ошибка в боте: {e}", flush=True)
+        print(f"[DEBUG] Agnes искл: {e}")
+        prompt_encoded = urllib.parse.quote(prompt)
+        return f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
 
-if __name__ == '__main__':
-    print("🔹 Запуск...", flush=True)
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    time.sleep(2)
-    run_health()
+def download_image(url):
+    try:
+        response = requests.get(url, timeout=60)
+        if response.status_code == 200:
+            return response.content
+        return None
+    except Exception as e:
+        print(f"[DEBUG] Скачивание ошибка: {e}")
+        return None
+
+# ================ ПУБЛИКАЦИЯ В ВК ================
+def post_to_vk(niche, image_bytes, text):
+    if niche not in VK_ACCOUNTS:
+        return False, f"Ниша '{niche}' не найдена"
+    vk_token = VK_ACCOUNTS[niche]["token"]
+    group_id = VK_ACCOUNTS[niche]["group_id"]
+
+    try:
+        # Проверка токена
+        check_resp = requests.get(
+            "https://api.vk.com/method/users.get",
+            params={"access_token": vk_token, "v": "5.131"}
+        ).json()
+        if "error" in check_resp:
+            return False, f"Ошибка проверки токена: {check_resp['error']['error_msg']}"
+
+        upload_url_resp = requests.get(
+            "https://api.vk.com/method/photos.getWallUploadServer",
+            params={
+                "group_id": abs(group_id),
+                "access_token": vk_token,
+                "v": "5.131"
+            }
+        ).json()
+        if "error" in upload_url_resp:
+            return False, f"Ошибка upload_url: {upload_url_resp['error']['error_msg']}"
+        upload_url = upload_url_resp["response"]["upload_url"]
+
+        files = {"photo": ("image.jpg", image_bytes, "image/jpeg")}
+        upload_resp = requests.post(upload_url, files=files).json()
+        if "error" in upload_resp:
+            return False, f"Ошибка загрузки: {upload_resp['error']['error_msg']}"
+
+        if upload_resp.get("photo") == "[]":
+            return False, "Пустой ответ от сервера загрузки"
+
+        save_params = {
+            "group_id": abs(group_id),
+            "server": upload_resp["server"],
+            "photo": upload_resp["photo"],
+            "hash": upload_resp["hash"],
+            "access_token": vk_token,
+            "v": "5.131"
+        }
+        save_resp = requests.get("https://api.vk.com/method/photos.saveWallPhoto", params=save_params).json()
+        if "error" in save_resp:
+            return False, f"Ошибка сохранения: {save_resp['error']['error_msg']}"
+
+        photo = save_resp["response"][0]
+        attachment = f"photo{photo['owner_id']}_{photo['id']}"
+
+        post_params = {
+            "owner_id": group_id,
+            "message": text,
+            "attachments": attachment,
+            "access_token": vk_token,
+            "v": "5.131",
+            "from_group": 1
+        }
+        post_resp = requests.get("https://api.vk.com/method/wall.post", params=post_params).json()
+        if "error" in post_resp:
+            return False, f"Ошибка публикации: {post_resp['error']['error_msg']}"
+
+        print(f"✅ Пост опубликован в группе {group_id}, ID: {post_resp['response']['post_id']}")
+        return True, None
+    except Exception as e:
+        return False, f"Исключение: {str(e)}"
+
+# ================ ВЫПОЛНЕНИЕ ОТЛОЖЕННОГО ПОСТА ================
+def execute_scheduled_post(item):
+    niche = item["niche"]
+    topic = item["topic"]
+    print(f"📢 Публикую пост: {topic} в {item['time']} (ниша: {niche})")
+
+    post_text = generate_post_text(niche, topic)
+    if not post_text:
+        print("❌ Не удалось сгенерировать текст")
+        return
+
+    image_url = generate_image(niche, topic)
+    image_bytes = download_image(image_url)
+    if not image_bytes:
+        print("❌ Не удалось скачать картинку")
+        return
+
+    success, error = post_to_vk(niche, image_bytes, post_text)
+    if success:
+        print("✅ Пост опубликован!")
+    else:
+        print(f"❌ Ошибка публикации: {error}")
+
+# ================ ПЛАНИРОВЩИК ================
+def scheduler_loop():
+    while True:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        schedule = load_schedule()
+        for item in schedule:
+            if item["time"] == now and not item.get("done", False):
+                execute_scheduled_post(item)
+                item["done"] = True
+                save_schedule(schedule)
+        time.sleep(30)
+
+threading.Thread(target=scheduler_loop, daemon=True).start()
+
+# ================ КОМАНДЫ ================
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(message,
+        "👋 Бот для генерации рекламных постов с картинками.\n"
+        "/post_in ниша тема минуты — пост через N минут\n"
+        "Пример: /post_in ai Нейросети 5\n"
+        "/add ниша тема ГГГГ-ММ-ДД ЧЧ:ММ\n"
+        "/list — список постов\n"
+        "/remove ID — удалить\n"
+        "Доступные ниши: родительский, строительный, ai"
+    )
+
+@bot.message_handler(commands=['post_in'])
+def post_in(message):
+    text = message.text.replace("/post_in", "").strip()
+    match = re.search(r'(\d+)$', text)
+    if not match:
+        bot.reply_to(message, "❌ Укажи число минут в конце, например: /post_in ai Нейросети 5")
+        return
+    minutes = int(match.group(1))
+    rest = text[:match.start()].strip()
+    parts = rest.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Формат: /post_in ниша тема минуты\nНапример: /post_in ai Нейросети 5")
+        return
+    niche = parts[0].lower()
+    topic = parts[1].strip()
+
+    if niche not in VK_ACCOUNTS:
+        bot.reply_to(message, f"❌ Ниша '{niche}' не найдена. Доступны: {', '.join(VK_ACCOUNTS.keys())}")
+        return
+
+    publish_time = datetime.now() + timedelta(minutes=minutes)
+    full_time = publish_time.strftime("%Y-%m-%d %H:%M")
+
+    schedule = load_schedule()
+    new_id = str(int(time.time()))
+    schedule.append({
+        "id": new_id,
+        "niche": niche,
+        "topic": topic,
+        "time": full_time,
+        "done": False
+    })
+    save_schedule(schedule)
+    bot.reply_to(message, f"✅ Пост добавлен: [{niche}] {topic} в {full_time} (через {minutes} мин)")
+
+@bot.message_handler(commands=['add'])
+def add_post(message):
+    args = message.text.split(maxsplit=4)
+    if len(args) < 5:
+        bot.reply_to(message, "❌ Формат: /add ниша тема ГГГГ-ММ-ДД ЧЧ:ММ\nНапример: /add ai Нейросети 2026-07-21 13:05")
+        return
+    niche = args[1]
+    topic = args[2]
+    date = args[3]
+    time_str = args[4]
+    full_time = f"{date} {time_str}"
+    try:
+        datetime.strptime(full_time, "%Y-%m-%d %H:%M")
+    except ValueError:
+        bot.reply_to(message, "❌ Неверный формат даты или времени. Используй: ГГГГ-ММ-ДД ЧЧ:ММ")
+        return
+    if niche not in VK_ACCOUNTS:
+        bot.reply_to(message, f"❌ Ниша '{niche}' не найдена")
+        return
+    schedule = load_schedule()
+    new_id = str(int(time.time()))
+    schedule.append({
+        "id": new_id,
+        "niche": niche,
+        "topic": topic,
+        "time": full_time,
+        "done": False
+    })
+    save_schedule(schedule)
+    bot.reply_to(message, f"✅ Пост добавлен: [{niche}] {topic} на {full_time}")
+
+@bot.message_handler(commands=['list'])
+def list_posts(message):
+    schedule = load_schedule()
+    if not schedule:
+        bot.reply_to(message, "📭 Нет запланированных постов")
+        return
+    lines = []
+    for item in schedule:
+        status = "✅" if item.get("done") else "⏳"
+        lines.append(f"{status} ID:{item['id']} [{item['niche']}] {item['topic']} -> {item['time']}")
+    bot.reply_to(message, "\n".join(lines[:10]))
+
+@bot.message_handler(commands=['remove'])
+def remove_post(message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Укажи ID поста: /remove 123456")
+        return
+    post_id = parts[1]
+    schedule = load_schedule()
+    new_schedule = [item for item in schedule if item["id"] != post_id]
+    if len(new_schedule) == len(schedule):
+        bot.reply_to(message, "❌ Пост с таким ID не найден")
+        return
+    save_schedule(new_schedule)
+    bot.reply_to(message, f"✅ Пост {post_id} удалён")
+
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    bot.reply_to(message,
+        "📌 Команды:\n"
+        "/post_in ниша тема минуты — пост через N минут\n"
+        "/add ниша тема ГГГГ-ММ-ДД ЧЧ:ММ\n"
+        "/list — список постов\n"
+        "/remove ID — удалить пост"
+    )
+
+if __name__ == "__main__":
+    print("🤖 Бот запущен...")
+    bot.polling(none_stop=True)
