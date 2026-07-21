@@ -11,10 +11,10 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 sys.stdout.reconfigure(line_buffering=True)
 
-# ===== ФИКСИРУЕМ ПУТЬ К ФАЙЛУ =====
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-SCHEDULE_FILE = os.path.join(SCRIPT_DIR, "schedule.json")
-print(f"📂 Папка бота: {SCRIPT_DIR}", flush=True)
+# ===== ПОСТОЯННОЕ ХРАНИЛИЩЕ НА БОТХОСТЕ =====
+DATA_DIR = "/data"
+os.makedirs(DATA_DIR, exist_ok=True)
+SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
 print(f"📂 Путь к расписанию: {SCHEDULE_FILE}", flush=True)
 
 # ===== Health-сервер =====
@@ -88,7 +88,8 @@ def load_schedule():
                 print(f"📂 Загружено {len(data)} записей из {SCHEDULE_FILE}", flush=True)
                 return data
         else:
-            print(f"📂 Файл {SCHEDULE_FILE} не найден", flush=True)
+            print(f"📂 Файл {SCHEDULE_FILE} не найден, создаём новый", flush=True)
+            save_schedule([])
             return []
     except Exception as e:
         print(f"⚠️ Ошибка загрузки: {e}", flush=True)
@@ -102,27 +103,84 @@ def save_schedule(schedule):
     except Exception as e:
         print(f"⚠️ Ошибка сохранения: {e}", flush=True)
 
-# ===== Генерация и публикация (заглушки) =====
+# ===== Генерация и публикация =====
 def generate_post_text(niche, topic):
-    return f"🔥 Пост для {niche} на тему: {topic}\n\n(текст сгенерирован автоматически)"
+    system_prompt = (
+        "Ты — профессиональный SMM-менеджер и копирайтер. "
+        "Напиши яркий, вовлекающий пост для ВКонтакте по заданной теме и нише. "
+        "Пост должен быть продающим, полезным и побуждать к действию. "
+        "Используй структуру: цепляющий заголовок (до 10 слов) → проблема аудитории → решение → практическая польза → призыв к действию. "
+        "Добавь эмодзи, разбей на короткие абзацы. В конце добавь 5 хештегов. Пиши человечно, без канцелярита."
+    )
+    user_prompt = f"Ниша: {niche}\nТема: {topic}"
+    headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
+    data = {
+        "model": "agnes-2.0-flash",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.85
+    }
+    try:
+        response = requests.post(
+            "https://apihub.agnes-ai.com/v1/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=120
+        )
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"]
+        else:
+            print(f"⚠️ Ошибка текста: {response.status_code}", flush=True)
+            return None
+    except Exception as e:
+        print(f"⚠️ Ошибка при генерации текста: {e}", flush=True)
+        return None
 
 def get_image_prompt(niche, topic):
-    return f"Иллюстрация к посту: {topic}"
+    base_prompt = {
+        "родительский": f"Семья за уютным столом, тёплый свет, мама обнимает дочку. Тема: {topic}. Фотореализм, 1:1, без текста.",
+        "строительный": f"Строитель в каске, современный дом, инструменты. Тема: {topic}. Индустриальный стиль, 1:1, без текста.",
+        "ai": f"Ноутбук с нейросетью, неоновые цвета, минимализм. Тема: {topic}. Футуристичный стиль, 1:1, без текста."
+    }
+    return base_prompt.get(niche, f"Иллюстрация к посту: {topic}. Ярко, современно, 1:1, без текста.")
 
 def generate_image(niche, topic):
     prompt = get_image_prompt(niche, topic)
-    # Используем Pollinations как резерв
-    prompt_encoded = urllib.parse.quote(prompt)
-    return f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
+    headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
+    data = {
+        "model": "agnes-image-2.1-flash",
+        "prompt": prompt,
+        "size": "1024x1024",
+        "n": 1
+    }
+    try:
+        response = requests.post(
+            "https://apihub.agnes-ai.com/v1/images/generations",
+            headers=headers,
+            json=data,
+            timeout=120
+        )
+        if response.status_code == 200:
+            return response.json()["data"][0]["url"]
+        else:
+            print(f"⚠️ Agnes ошибка: {response.status_code}", flush=True)
+            prompt_encoded = urllib.parse.quote(prompt)
+            return f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
+    except Exception as e:
+        print(f"⚠️ Ошибка генерации картинки: {e}", flush=True)
+        prompt_encoded = urllib.parse.quote(prompt)
+        return f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
 
 def download_image(url):
     try:
-        resp = requests.get(url, timeout=60)
-        if resp.status_code == 200:
-            return resp.content
+        response = requests.get(url, timeout=60)
+        if response.status_code == 200:
+            return response.content
         return None
     except Exception as e:
-        print(f"⚠️ Ошибка скачивания: {e}", flush=True)
+        print(f"⚠️ Ошибка скачивания картинки: {e}", flush=True)
         return None
 
 def post_to_vk(niche, image_bytes, text):
@@ -197,7 +255,6 @@ def execute_scheduled_post(item):
         print("❌ Текст не сгенерирован", flush=True)
         return
     image_url = generate_image(niche, topic)
-    print(f"🖼️ URL картинки: {image_url[:80]}...", flush=True)
     image_bytes = download_image(image_url)
     if not image_bytes:
         print("❌ Картинка не скачалась", flush=True)
