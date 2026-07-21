@@ -100,12 +100,12 @@ try:
 except Exception as e:
     log(f"⚠️ Ошибка удаления вебхука: {e}")
 
-# ===== ФУНКЦИЯ ПРОВЕРКИ ТОКЕНА VK (без users.get) =====
+# ===== ФУНКЦИЯ ПРОВЕРКИ ТОКЕНА VK =====
 def check_vk_token(token, group_id):
-    """Проверяет токен и права на публикацию в группе (для сервисных токенов)"""
+    """Проверяет токен и права (упрощённо, без users.get)"""
     log(f"   Проверка токена для группы {group_id}...")
     try:
-        # Проверяем доступ к группе через groups.getById
+        # Проверяем доступ к группе
         resp = requests.get(
             "https://api.vk.com/method/groups.getById",
             params={"group_id": abs(group_id), "access_token": token, "v": "5.131"},
@@ -119,30 +119,14 @@ def check_vk_token(token, group_id):
             log(f"   ❌ Ошибка доступа к группе: {data['error']['error_msg']}")
             return False, data['error']['error_msg']
         if "response" not in data or not data["response"]:
-            log(f"   ❌ Группа не найдена или нет доступа")
-            return False, "Группа не найдена или нет доступа"
+            log(f"   ❌ Группа не найдена")
+            return False, "Группа не найдена"
         log(f"   ✅ Группа доступна, ID: {data['response'][0]['id']}")
-
-        # Проверяем право на чтение стены (wall.get) – это даёт представление о правах
-        resp = requests.get(
-            "https://api.vk.com/method/wall.get",
-            params={"owner_id": group_id, "count": 1, "access_token": token, "v": "5.131"},
-            timeout=10
-        )
-        if resp.status_code != 200:
-            log(f"   ⚠️ Не удалось проверить права на стену: HTTP {resp.status_code}")
-        else:
-            data = resp.json()
-            if "error" in data:
-                log(f"   ⚠️ Нет прав на чтение стены: {data['error']['error_msg']}")
-            else:
-                log(f"   ✅ Права на стену есть")
         return True, "OK"
     except Exception as e:
         log(f"   ❌ Исключение при проверке: {e}")
         return False, str(e)
 
-# Проверяем все токены при старте
 log("🔍 Проверка токенов VK...")
 for name, acc in VK_ACCOUNTS.items():
     ok, msg = check_vk_token(acc["token"], acc["group_id"])
@@ -382,7 +366,7 @@ def post_to_vk(niche, image_bytes, text):
     vk_token = VK_ACCOUNTS[niche]["token"]
     group_id = VK_ACCOUNTS[niche]["group_id"]
 
-    # Повторная проверка токена перед публикацией (но без users.get)
+    # Повторная проверка токена
     log(f"   Повторная проверка токена для {niche}...")
     ok, msg = check_vk_token(vk_token, group_id)
     if not ok:
@@ -500,6 +484,8 @@ def scheduler_loop():
             if not schedule:
                 log("📭 Расписание пустое")
             else:
+                # Логируем все задания
+                log(f"📋 Все задания: {schedule}")
                 for item in schedule:
                     if item["time"] == now and not item.get("done", False):
                         log(f"📢 Найдено задание: {item['topic']} в {item['time']}")
@@ -511,7 +497,7 @@ def scheduler_loop():
             traceback.print_exc(file=sys.stdout)
         time.sleep(30)
 
-# ===== ОБРАБОТЧИКИ КОМАНД TELEGRAM =====
+# ===== ОБРАБОТЧИКИ КОМАНД TELEGRAM (с /run_now) =====
 def process_message(message):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
@@ -521,9 +507,40 @@ def process_message(message):
         send_message(chat_id,
             "👋 Бот для автопостинга.\n"
             "/post_in ниша тема минуты — добавить пост через N минут\n"
+            "/run_now ниша тема — опубликовать прямо сейчас\n"
             "/list — показать все задания\n"
             "/debug — показать содержимое schedule.json"
         )
+        return
+
+    if text.startswith("/run_now"):
+        parts = text.replace("/run_now", "").strip()
+        first_space = parts.find(' ')
+        if first_space == -1:
+            send_message(chat_id, "❌ Формат: /run_now ниша тема")
+            return
+        niche = parts[:first_space].lower()
+        topic = parts[first_space+1:].strip()
+        if niche not in VK_ACCOUNTS:
+            send_message(chat_id, f"❌ Ниша '{niche}' не найдена. Доступные: {', '.join(VK_ACCOUNTS.keys())}")
+            return
+        send_message(chat_id, f"⏳ Начинаю публикацию в '{niche}'...")
+        def publish():
+            log(f"📢 Ручная публикация: {niche} -> {topic}")
+            post_text = generate_post_text(niche, topic)
+            if not post_text:
+                send_message(chat_id, "❌ Не удалось сгенерировать текст")
+                return
+            image_url = generate_image(niche, topic)
+            image_bytes = None
+            if image_url:
+                image_bytes = download_image(image_url)
+            success, error = post_to_vk(niche, image_bytes, post_text)
+            if success:
+                send_message(chat_id, f"✅ Пост опубликован в группе '{niche}'")
+            else:
+                send_message(chat_id, f"❌ Ошибка публикации: {error}")
+        threading.Thread(target=publish).start()
         return
 
     if text.startswith("/post_in"):
@@ -594,7 +611,6 @@ def get_updates(offset):
             data = resp.json()
             if data.get("result"):
                 log(f"📨 Получены обновления: {len(data['result'])} сообщений")
-            if data.get("result"):
                 return data["result"]
         else:
             log(f"⚠️ getUpdates ошибка: {resp.status_code}")
@@ -602,12 +618,12 @@ def get_updates(offset):
         log(f"⚠️ getUpdates исключение: {e}")
     return []
 
-# ===== ТЕСТОВЫЕ ПОСТЫ ПРИ СТАРТЕ =====
+# ===== ДОБАВЛЕНИЕ ТЕСТОВЫХ ПОСТОВ (на +1 минуту) =====
 def add_test_posts_if_empty():
     schedule = load_schedule()
     if not schedule:
-        log("🧪 Расписание пустое, добавляем тестовые посты для всех групп через 2 минуты")
-        test_time = (datetime.now() + timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M")
+        log("🧪 Расписание пустое, добавляем тестовые посты для всех групп через 1 минуту")
+        test_time = (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")
         for niche in VK_ACCOUNTS.keys():
             schedule.append({
                 "id": f"test_{niche}_{int(time.time())}",
