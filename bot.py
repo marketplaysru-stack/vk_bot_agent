@@ -9,8 +9,32 @@ import time
 import re
 from datetime import datetime, timedelta
 from telebot import apihelper
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ===== ПЕРВЫЙ ВЫВОД В ЛОГИ =====
+# ============================================================
+#  HTTP-СЕРВЕР ДЛЯ HEALTH CHECK (чтобы Ботхост не ругался)
+# ============================================================
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    
+    def log_message(self, format, *args):
+        # Отключаем вывод логов от сервера, чтобы не засорять консоль
+        pass
+
+def run_health_server():
+    server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
+    server.serve_forever()
+
+# Запускаем health-сервер в отдельном потоке
+health_thread = threading.Thread(target=run_health_server, daemon=True)
+health_thread.start()
+print("🟢 Health-сервер запущен на порту 8080", flush=True)
+
+# ============================================================
+
 print("🚀 Бот запускается...", flush=True)
 sys.stdout.flush()
 
