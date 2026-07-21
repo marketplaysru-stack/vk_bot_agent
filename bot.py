@@ -1,6 +1,5 @@
 import sys
 import os
-import telebot
 import requests
 import json
 import urllib.parse
@@ -8,7 +7,6 @@ import threading
 import time
 import re
 from datetime import datetime, timedelta
-from telebot import apihelper
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ============================================================
@@ -69,32 +67,29 @@ except Exception as e:
     print(f"❌ Ошибка загрузки групп: {e}", flush=True)
     sys.exit(1)
 
-# ===== НАСТРОЙКА БОТА =====
-apihelper.CONNECT_TIMEOUT = 60
-apihelper.READ_TIMEOUT = 120
+# ===== ПРОВЕРКА ДОСТУПА К TELEGRAM =====
 try:
-    bot = telebot.TeleBot(BOT_TOKEN)
-    print("✅ Бот инициализирован", flush=True)
-except Exception as e:
-    print(f"❌ Ошибка инициализации бота: {e}", flush=True)
-    sys.exit(1)
-
-# ===== УДАЛЯЕМ ВЕБХУК (чтобы точно работал polling) =====
-try:
-    bot.remove_webhook()
-    print("✅ Вебхук удалён (если был)", flush=True)
-except Exception as e:
-    print(f"⚠️ Ошибка удаления вебхука: {e}", flush=True)
-
-# ===== ПРОВЕРКА ПОДКЛЮЧЕНИЯ К TELEGRAM =====
-try:
-    bot_info = bot.get_me()
-    print(f"✅ Подключение к Telegram установлено, бот: @{bot_info.username}", flush=True)
+    test_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getMe"
+    test_resp = requests.get(test_url, timeout=10)
+    if test_resp.status_code == 200:
+        bot_info = test_resp.json()["result"]
+        print(f"✅ Подключение к Telegram установлено, бот: @{bot_info['username']}", flush=True)
+    else:
+        print(f"❌ Ошибка доступа к Telegram: {test_resp.status_code} {test_resp.text}", flush=True)
+        sys.exit(1)
 except Exception as e:
     print(f"❌ Не удалось подключиться к Telegram: {e}", flush=True)
     sys.exit(1)
 
+# ===== УДАЛЯЕМ ВЕБХУК =====
+try:
+    requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", timeout=10)
+    print("✅ Вебхук удалён (если был)", flush=True)
+except Exception as e:
+    print(f"⚠️ Ошибка удаления вебхука: {e}", flush=True)
+
 SCHEDULE_FILE = "schedule.json"
+last_update_id = 0
 
 # ================ ФУНКЦИИ ================
 def load_schedule():
@@ -288,121 +283,140 @@ def scheduler_loop():
             print(f"⚠️ Ошибка в планировщике: {e}", flush=True)
         time.sleep(30)
 
-# ================ ОБРАБОТЧИКИ КОМАНД ================
-@bot.message_handler(commands=['start'])
-def start(message):
-    print(f"📩 Получена команда /start от {message.chat.id}", flush=True)
-    bot.reply_to(message,
-        "👋 Бот для генерации рекламных постов.\n"
-        "/post_in ниша тема минуты — пост через N минут\n"
-        "Пример: /post_in ai Нейросети 5\n"
-        "/add ниша тема ГГГГ-ММ-ДД ЧЧ:ММ\n"
-        "/list — список постов\n"
-        "/remove ID — удалить пост\n"
-        "Доступны: родительский, строительный, ai"
-    )
+# ================ ОБРАБОТЧИКИ КОМАНД (ручной polling) ================
+def process_message(message):
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "").strip()
+    print(f"📩 Получено сообщение от {chat_id}: {text}", flush=True)
 
-@bot.message_handler(commands=['post_in'])
-def post_in(message):
-    print(f"📩 Получена команда /post_in от {message.chat.id}: {message.text}", flush=True)
-    text = message.text.replace("/post_in", "").strip()
-    match = re.search(r'(\d+)$', text)
-    if not match:
-        bot.reply_to(message, "❌ Укажи число минут в конце, например: /post_in ai Нейросети 5")
-        return
-    minutes = int(match.group(1))
-    rest = text[:match.start()].strip()
-    parts = rest.split(maxsplit=1)
-    if len(parts) < 2:
-        bot.reply_to(message, "❌ Формат: /post_in ниша тема минуты\nНапример: /post_in ai Нейросети 5")
-        return
-    niche = parts[0].lower()
-    topic = parts[1].strip()
-    if niche not in VK_ACCOUNTS:
-        bot.reply_to(message, f"❌ Ниша '{niche}' не найдена. Доступны: {', '.join(VK_ACCOUNTS.keys())}")
-        return
-    publish_time = datetime.now() + timedelta(minutes=minutes)
-    full_time = publish_time.strftime("%Y-%m-%d %H:%M")
-    schedule = load_schedule()
-    new_id = str(int(time.time()))
-    schedule.append({"id": new_id, "niche": niche, "topic": topic, "time": full_time, "done": False})
-    save_schedule(schedule)
-    bot.reply_to(message, f"✅ Пост добавлен: [{niche}] {topic} в {full_time} (через {minutes} мин)")
+    if text.startswith("/start"):
+        send_message(chat_id,
+            "👋 Бот для генерации рекламных постов.\n"
+            "/post_in ниша тема минуты — пост через N минут\n"
+            "Пример: /post_in ai Нейросети 5\n"
+            "/add ниша тема ГГГГ-ММ-ДД ЧЧ:ММ\n"
+            "/list — список постов\n"
+            "/remove ID — удалить пост\n"
+            "Доступны: родительский, строительный, ai"
+        )
 
-@bot.message_handler(commands=['add'])
-def add_post(message):
-    print(f"📩 Получена команда /add от {message.chat.id}: {message.text}", flush=True)
-    args = message.text.split(maxsplit=4)
-    if len(args) < 5:
-        bot.reply_to(message, "❌ Формат: /add ниша тема ГГГГ-ММ-ДД ЧЧ:ММ\nНапример: /add ai Нейросети 2026-07-21 13:05")
-        return
-    niche = args[1]
-    topic = args[2]
-    date = args[3]
-    time_str = args[4]
-    full_time = f"{date} {time_str}"
+    elif text.startswith("/post_in"):
+        parts = text.replace("/post_in", "").strip()
+        match = re.search(r'(\d+)$', parts)
+        if not match:
+            send_message(chat_id, "❌ Укажи число минут в конце, например: /post_in ai Нейросети 5")
+            return
+        minutes = int(match.group(1))
+        rest = parts[:match.start()].strip()
+        args = rest.split(maxsplit=1)
+        if len(args) < 2:
+            send_message(chat_id, "❌ Формат: /post_in ниша тема минуты\nНапример: /post_in ai Нейросети 5")
+            return
+        niche = args[0].lower()
+        topic = args[1].strip()
+        if niche not in VK_ACCOUNTS:
+            send_message(chat_id, f"❌ Ниша '{niche}' не найдена. Доступны: {', '.join(VK_ACCOUNTS.keys())}")
+            return
+        publish_time = datetime.now() + timedelta(minutes=minutes)
+        full_time = publish_time.strftime("%Y-%m-%d %H:%M")
+        schedule = load_schedule()
+        new_id = str(int(time.time()))
+        schedule.append({"id": new_id, "niche": niche, "topic": topic, "time": full_time, "done": False})
+        save_schedule(schedule)
+        send_message(chat_id, f"✅ Пост добавлен: [{niche}] {topic} в {full_time} (через {minutes} мин)")
+
+    elif text.startswith("/add"):
+        parts = text.split(maxsplit=4)
+        if len(parts) < 5:
+            send_message(chat_id, "❌ Формат: /add ниша тема ГГГГ-ММ-ДД ЧЧ:ММ\nНапример: /add ai Нейросети 2026-07-21 13:05")
+            return
+        niche = parts[1]
+        topic = parts[2]
+        date = parts[3]
+        time_str = parts[4]
+        full_time = f"{date} {time_str}"
+        try:
+            datetime.strptime(full_time, "%Y-%m-%d %H:%M")
+        except ValueError:
+            send_message(chat_id, "❌ Неверный формат даты или времени. Используй: ГГГГ-ММ-ДД ЧЧ:ММ")
+            return
+        if niche not in VK_ACCOUNTS:
+            send_message(chat_id, f"❌ Ниша '{niche}' не найдена")
+            return
+        schedule = load_schedule()
+        new_id = str(int(time.time()))
+        schedule.append({"id": new_id, "niche": niche, "topic": topic, "time": full_time, "done": False})
+        save_schedule(schedule)
+        send_message(chat_id, f"✅ Пост добавлен: [{niche}] {topic} на {full_time}")
+
+    elif text.startswith("/list"):
+        schedule = load_schedule()
+        if not schedule:
+            send_message(chat_id, "📭 Нет запланированных постов")
+            return
+        lines = []
+        for item in schedule:
+            status = "✅" if item.get("done") else "⏳"
+            lines.append(f"{status} ID:{item['id']} [{item['niche']}] {item['topic']} -> {item['time']}")
+        send_message(chat_id, "\n".join(lines[:10]))
+
+    elif text.startswith("/remove"):
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "❌ Укажи ID поста: /remove 123456")
+            return
+        post_id = parts[1]
+        schedule = load_schedule()
+        new_schedule = [item for item in schedule if item["id"] != post_id]
+        if len(new_schedule) == len(schedule):
+            send_message(chat_id, "❌ Пост с таким ID не найден")
+            return
+        save_schedule(new_schedule)
+        send_message(chat_id, f"✅ Пост {post_id} удалён")
+
+    elif text.startswith("/help"):
+        send_message(chat_id,
+            "📌 Команды:\n"
+            "/post_in ниша тема минуты — пост через N минут\n"
+            "/add ниша тема ГГГГ-ММ-ДД ЧЧ:ММ\n"
+            "/list — список постов\n"
+            "/remove ID — удалить пост"
+        )
+
+def send_message(chat_id, text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     try:
-        datetime.strptime(full_time, "%Y-%m-%d %H:%M")
-    except ValueError:
-        bot.reply_to(message, "❌ Неверный формат даты или времени. Используй: ГГГГ-ММ-ДД ЧЧ:ММ")
-        return
-    if niche not in VK_ACCOUNTS:
-        bot.reply_to(message, f"❌ Ниша '{niche}' не найдена")
-        return
-    schedule = load_schedule()
-    new_id = str(int(time.time()))
-    schedule.append({"id": new_id, "niche": niche, "topic": topic, "time": full_time, "done": False})
-    save_schedule(schedule)
-    bot.reply_to(message, f"✅ Пост добавлен: [{niche}] {topic} на {full_time}")
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"⚠️ Ошибка отправки сообщения: {e}", flush=True)
 
-@bot.message_handler(commands=['list'])
-def list_posts(message):
-    print(f"📩 Получена команда /list от {message.chat.id}", flush=True)
-    schedule = load_schedule()
-    if not schedule:
-        bot.reply_to(message, "📭 Нет запланированных постов")
-        return
-    lines = []
-    for item in schedule:
-        status = "✅" if item.get("done") else "⏳"
-        lines.append(f"{status} ID:{item['id']} [{item['niche']}] {item['topic']} -> {item['time']}")
-    bot.reply_to(message, "\n".join(lines[:10]))
-
-@bot.message_handler(commands=['remove'])
-def remove_post(message):
-    print(f"📩 Получена команда /remove от {message.chat.id}: {message.text}", flush=True)
-    parts = message.text.split()
-    if len(parts) < 2:
-        bot.reply_to(message, "❌ Укажи ID поста: /remove 123456")
-        return
-    post_id = parts[1]
-    schedule = load_schedule()
-    new_schedule = [item for item in schedule if item["id"] != post_id]
-    if len(new_schedule) == len(schedule):
-        bot.reply_to(message, "❌ Пост с таким ID не найден")
-        return
-    save_schedule(new_schedule)
-    bot.reply_to(message, f"✅ Пост {post_id} удалён")
-
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    print(f"📩 Получена команда /help от {message.chat.id}", flush=True)
-    bot.reply_to(message,
-        "📌 Команды:\n"
-        "/post_in ниша тема минуты — пост через N минут\n"
-        "/add ниша тема ГГГГ-ММ-ДД ЧЧ:ММ\n"
-        "/list — список постов\n"
-        "/remove ID — удалить пост"
-    )
+def get_updates(offset):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    params = {"offset": offset, "timeout": 30, "allowed_updates": ["message"]}
+    try:
+        resp = requests.get(url, params=params, timeout=35)
+        if resp.status_code == 200:
+            return resp.json().get("result", [])
+        else:
+            print(f"⚠️ Ошибка getUpdates: {resp.status_code} {resp.text}", flush=True)
+            return []
+    except Exception as e:
+        print(f"⚠️ Ошибка при получении обновлений: {e}", flush=True)
+        return []
 
 # ================ ЗАПУСК ================
 if __name__ == "__main__":
     print("🤖 Бот запущен...", flush=True)
     # Запускаем планировщик
     threading.Thread(target=scheduler_loop, daemon=True).start()
-    print("🔄 Запуск polling...", flush=True)
-    try:
-        bot.polling(none_stop=True)
-    except Exception as e:
-        print(f"❌ Ошибка в polling: {e}", flush=True)
-        sys.exit(1)
+    
+    # Основной цикл polling
+    update_id = 0
+    while True:
+        updates = get_updates(update_id + 1)
+        for upd in updates:
+            update_id = upd["update_id"]
+            if "message" in upd:
+                process_message(upd["message"])
+        time.sleep(1)
