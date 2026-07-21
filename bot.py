@@ -37,8 +37,8 @@ def log(msg):
 
 # ===== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-VK_TOKEN = os.getenv("VK_TOKEN_AI")          # Токен для AI-группы
-VK_GROUP_ID = os.getenv("VK_GROUP_ID_AI")    # ID AI-группы
+VK_TOKEN = os.getenv("VK_TOKEN_AI")
+VK_GROUP_ID = os.getenv("VK_GROUP_ID_AI")
 AGNES_API_KEY = os.getenv("AGNES_API_KEY")
 GIGACHAT_API_KEY = os.getenv("GIGACHAT_API_KEY")
 PORT = int(os.getenv("PORT", 8080))
@@ -61,7 +61,7 @@ except ValueError:
 if not AGNES_API_KEY:
     log("⚠️ AGNES_API_KEY не задан (картинки через Pollinations)")
 
-log("🚀 Запуск бота для AI-навигатора")
+log("🚀 Запуск бота для AI-навигатора (с улучшенными картинками)")
 log(f"📌 Группа ID: {VK_GROUP_ID}")
 
 # ===== ПУТЬ К ФАЙЛУ РАСПИСАНИЯ =====
@@ -152,7 +152,7 @@ def save_schedule(schedule):
     except Exception as e:
         log(f"⚠️ Ошибка сохранения: {e}")
 
-# ===== ГЕНЕРАЦИЯ ТЕКСТА =====
+# ===== ГЕНЕРАЦИЯ ТЕКСТА (без изменений) =====
 def generate_post_text(topic):
     log(f"🔤 Генерация текста для темы: {topic}")
     system_prompt = (
@@ -191,9 +191,29 @@ def generate_post_text(topic):
         log(f"   ❌ Генерация текста провалилась: {e}")
         return None
 
-# ===== ГЕНЕРАЦИЯ КАРТИНКИ (с резервом) =====
+# ============================================================
+# ===== УЛУЧШЕННАЯ ГЕНЕРАЦИЯ КАРТИНОК (РЕКЛАМНЫЙ ФОРМАТ) =====
+# ============================================================
+
+def build_image_prompt(topic):
+    """
+    Формирует детализированный промпт для генерации рекламного изображения.
+    """
+    base_prompt = (
+        f"Создай профессиональное рекламное изображение для поста на тему: '{topic}'. "
+        "Изображение должно быть высокодетализированным, фотографического качества (фотореализм), с яркими насыщенными цветами, "
+        "идеально сбалансированной композицией и кинематографическим освещением. "
+        "Стиль: современный, минималистичный, привлекающий внимание, подходящий для социальных сетей. "
+        "Цветовая гамма: контрастная, с акцентными элементами. "
+        "Изображение должно вызывать эмоции и вдохновлять на действие. "
+        "Формат: квадратный (1:1), подходит для обложки поста ВКонтакте. "
+        "Без текста, только визуал. "
+        "Качество: 4K, ультра-детализированное, с высокой чёткостью и резкостью."
+    )
+    return base_prompt
+
 def generate_image_agnes(prompt):
-    log("   🖼️ Попытка Agnes...")
+    log("   🖼️ Попытка Agnes (улучшенный промпт)...")
     if not AGNES_API_KEY:
         log("   AGNES_API_KEY не задан")
         return None
@@ -201,7 +221,7 @@ def generate_image_agnes(prompt):
     data = {
         "model": "agnes-image-2.1-flash",
         "prompt": prompt,
-        "size": "1024x1024",
+        "size": "1024x1024",   # можно попробовать 1536x1536, но не все модели поддерживают
         "n": 1
     }
     def _do():
@@ -226,7 +246,7 @@ def generate_image_agnes(prompt):
         return None
 
 def generate_image_gigachat(prompt):
-    log("   🖼️ Попытка GigaChat...")
+    log("   🖼️ Попытка GigaChat (улучшенный промпт)...")
     if not GIGACHAT_API_KEY:
         log("   GIGACHAT_API_KEY не задан")
         return None
@@ -262,9 +282,11 @@ def generate_image_gigachat(prompt):
         return None
 
 def generate_image_pollinations(prompt):
-    log("   🖼️ Попытка Pollinations...")
+    log("   🖼️ Попытка Pollinations (улучшенный промпт)...")
     try:
+        # Добавляем параметры качества для Pollinations (если поддерживаются)
         prompt_encoded = urllib.parse.quote(prompt)
+        # Можно добавить &model=flux или &model=sd3 для лучшего качества, но не факт, что они доступны
         url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
         log("   ✅ URL сформирован")
         return url
@@ -273,12 +295,11 @@ def generate_image_pollinations(prompt):
         return None
 
 def generate_image(topic):
-    log(f"🖼️ Генерация картинки для темы: {topic}")
-    prompt = (
-        f"Иллюстрация к посту на тему: {topic}. "
-        "Яркие цвета, современный стиль, 1:1, без текста."
-    )
-    # Попробовать источники по порядку
+    log(f"🖼️ Генерация рекламной картинки для темы: {topic}")
+    prompt = build_image_prompt(topic)
+    log(f"   Промпт: {prompt[:150]}...")
+
+    # Цепочка источников
     url = generate_image_agnes(prompt)
     if url:
         return url
@@ -291,6 +312,7 @@ def generate_image(topic):
     log("❌ Все источники картинок недоступны")
     return None
 
+# ===== СКАЧИВАНИЕ КАРТИНКИ (с проверкой) =====
 def download_image(url):
     log(f"📥 Скачивание картинки: {url[:60]}...")
     def _do():
@@ -312,7 +334,7 @@ def download_image(url):
         log(f"   ❌ Скачивание провалилось: {e}")
         return None
 
-# ===== ПУБЛИКАЦИЯ В VK (с подробным логированием) =====
+# ===== ПУБЛИКАЦИЯ В VK (без изменений) =====
 def vk_api_request(method, params, token, retries=3):
     base_url = "https://api.vk.com/method/"
     params = params.copy()
@@ -338,24 +360,20 @@ def post_to_vk(image_bytes, text):
     group_id = VK_GROUP_ID
     token = VK_TOKEN
 
-    # Если картинка не передана – публикуем текст
     if image_bytes is None:
         log("   Публикация без фото (только текст)")
         result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
         if result is None:
-            log("   ❌ Не удалось опубликовать текст")
             return False, "Ошибка публикации текста"
         log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
         return True, None
 
     log("   Публикация с фото")
     try:
-        # Шаг 1: Получение upload_url
         log("   Шаг 1: Получение upload_url...")
         upload_resp = vk_api_request("photos.getWallUploadServer", {"group_id": abs(group_id)}, token=token, retries=3)
         if upload_resp is None:
             log("   ❌ Не удалось получить upload_url, публикуем без фото")
-            # Пробуем без фото
             result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
             if result is None:
                 return False, "Ошибка публикации после падения upload_url"
@@ -364,7 +382,6 @@ def post_to_vk(image_bytes, text):
         upload_url = upload_resp["upload_url"]
         log(f"   upload_url получен: {upload_url[:50]}...")
 
-        # Шаг 2: Загрузка фото
         log("   Шаг 2: Загрузка фото...")
         def _upload():
             files = {"photo": ("image.jpg", image_bytes, "image/jpeg")}
@@ -391,7 +408,6 @@ def post_to_vk(image_bytes, text):
             log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
             return True, None
 
-        # Шаг 3: Сохранение фото на стене
         log("   Шаг 3: Сохранение фото на стене...")
         save_params = {
             "group_id": abs(group_id),
@@ -412,7 +428,6 @@ def post_to_vk(image_bytes, text):
         attachment = f"photo{photo['owner_id']}_{photo['id']}"
         log(f"   Фото сохранено, attachment: {attachment}")
 
-        # Шаг 4: Публикация поста с фото
         log("   Шаг 4: Публикация поста с фото...")
         post_params = {
             "owner_id": group_id,
@@ -435,7 +450,6 @@ def post_to_vk(image_bytes, text):
     except Exception as e:
         log(f"   Исключение в post_to_vk: {e}")
         traceback.print_exc(file=sys.stdout)
-        # Последняя попытка – текст без фото
         try:
             result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
             if result is not None:
@@ -458,7 +472,7 @@ def execute_scheduled_post(item):
         return
     log(f"✅ Текст получен, длина {len(post_text)}")
 
-    log("🖼️ Шаг 2: Генерация картинки...")
+    log("🖼️ Шаг 2: Генерация картинки (улучшенный промпт)...")
     image_url = generate_image(topic)
     image_bytes = None
     if image_url:
@@ -491,10 +505,7 @@ def scheduler_loop():
                 log("📭 Расписание пустое")
             else:
                 for item in schedule:
-                    # Для AI-бота обрабатываем все посты (без проверки по niche, т.к. мы отдельный экземпляр)
-                    # Если же хотим фильтровать, можно добавить проверку, но пока оставим все
                     if item["time"] == now and not item.get("done", False):
-                        # Пропускаем, если есть niche и она не равна "ai" (для совместимости с общим файлом)
                         if item.get("niche") and item["niche"] != "ai":
                             log(f"⏭️ Пропускаем задание для {item.get('niche')}")
                             continue
@@ -515,7 +526,7 @@ def process_message(message):
 
     if text.startswith("/start"):
         send_message(chat_id,
-            "👋 Бот для автопостинга в AI-навигатор.\n"
+            "👋 Бот для автопостинга в AI-навигатор (с крутыми картинками).\n"
             "/post_in тема минуты — добавить пост через N минут\n"
             "/run_now тема — опубликовать прямо сейчас\n"
             "/list — показать все задания\n"
@@ -541,7 +552,7 @@ def process_message(message):
                 image_bytes = download_image(image_url)
             success, error = post_to_vk(image_bytes, post_text)
             if success:
-                send_message(chat_id, f"✅ Пост опубликован!")
+                send_message(chat_id, f"✅ Пост опубликован с крутой картинкой!")
             else:
                 send_message(chat_id, f"❌ Ошибка публикации: {error}")
         threading.Thread(target=publish).start()
@@ -617,10 +628,9 @@ def get_updates(offset):
         log(f"⚠️ getUpdates исключение: {e}")
     return []
 
-# ===== ДОБАВЛЕНИЕ ТЕСТОВОГО ПОСТА ПРИ ПЕРВОМ ЗАПУСКЕ =====
+# ===== ДОБАВЛЕНИЕ ТЕСТОВОГО ПОСТА =====
 def add_test_post_if_empty():
     schedule = load_schedule()
-    # Проверяем, есть ли уже посты для AI
     has_ai = any(item.get("niche") == "ai" for item in schedule)
     if not has_ai:
         log("🧪 Добавляем тестовый пост для AI через 2 минуты")
@@ -628,7 +638,7 @@ def add_test_post_if_empty():
         schedule.append({
             "id": f"test_ai_{int(time.time())}",
             "niche": "ai",
-            "topic": "Тестовый пост для AI-навигатора (автоматический)",
+            "topic": "Тестовый пост с крутой картинкой для AI-навигатора",
             "time": test_time,
             "done": False
         })
@@ -637,7 +647,7 @@ def add_test_post_if_empty():
 
 # ===== ГЛАВНЫЙ ЦИКЛ =====
 if __name__ == "__main__":
-    log("🤖 Бот для AI-навигатора запущен")
+    log("🤖 Бот для AI-навигатора (улучшенные картинки) запущен")
     add_test_post_if_empty()
     threading.Thread(target=scheduler_loop, daemon=True).start()
     update_id = 0
