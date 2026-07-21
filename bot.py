@@ -12,10 +12,10 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ===== ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ (для консоли) =====
+# ===== ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ =====
 sys.stdout.reconfigure(line_buffering=True)
 
-# ===== НАСТРОЙКА ЛОГГИРОВАНИЯ (файл + консоль) =====
+# ===== НАСТРОЙКА ЛОГГИРОВАНИЯ =====
 DATA_DIR = "/data"
 os.makedirs(DATA_DIR, exist_ok=True)
 LOG_FILE = os.path.join(DATA_DIR, "bot.log")
@@ -39,7 +39,7 @@ def log(msg):
 SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
 log(f"📂 Путь к расписанию: {SCHEDULE_FILE}")
 
-# ===== Health-сервер (для Ботхоста) =====
+# ===== HEALTH-СЕРВЕР =====
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -58,7 +58,7 @@ log("🟢 Health-сервер запущен")
 
 log("🚀 Бот запускается...")
 
-# ===== ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ =====
+# ===== ПРОВЕРКА ПЕРЕМЕННЫХ =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 AGNES_API_KEY = os.getenv("AGNES_API_KEY")
 GIGACHAT_API_KEY = os.getenv("GIGACHAT_API_KEY")
@@ -67,20 +67,27 @@ if not BOT_TOKEN:
     log("❌ BOT_TOKEN не задан")
     sys.exit(1)
 if not AGNES_API_KEY:
-    log("⚠️ AGNES_API_KEY не задан (картинки будут через Pollinations)")
+    log("⚠️ AGNES_API_KEY не задан")
 
 VK_ACCOUNTS = {}
 for name, suffix in [("родительский", "РОДИТЕЛЬСКИЙ"), ("строительный", "СТРОИТЕЛЬНЫЙ"), ("ai", "AI")]:
     token = os.getenv(f"VK_TOKEN_{suffix}")
     group_id_str = os.getenv(f"VK_GROUP_ID_{suffix}")
     if token and group_id_str:
-        VK_ACCOUNTS[name] = {"token": token, "group_id": int(group_id_str)}
-        log(f"✅ Группа '{name}': ID={group_id_str}")
+        try:
+            group_id = int(group_id_str)
+            VK_ACCOUNTS[name] = {"token": token, "group_id": group_id}
+            log(f"✅ Группа '{name}': ID={group_id}, токен: {token[:10]}...")
+        except ValueError:
+            log(f"❌ Неверный ID группы '{name}': {group_id_str}")
+    else:
+        log(f"⚠️ Не заданы переменные для группы '{name}'")
+
 if not VK_ACCOUNTS:
     log("❌ Нет групп VK")
     sys.exit(1)
 
-# ===== ПРОВЕРКА ПОДКЛЮЧЕНИЯ К TELEGRAM =====
+# ===== ПРОВЕРКА TELEGRAM =====
 try:
     r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=10)
     if r.status_code == 200:
@@ -93,7 +100,6 @@ except Exception as e:
     log(f"❌ Не удалось подключиться к Telegram: {e}")
     sys.exit(1)
 
-# Удаляем вебхук (на всякий случай)
 try:
     requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", timeout=10)
     log("✅ Вебхук удалён")
@@ -106,12 +112,10 @@ def retry_call(func, *args, max_retries=3, delay=2, backoff=2, **kwargs):
     for attempt in range(max_retries):
         try:
             result = func(*args, **kwargs)
-            # Если результат - кортеж (success, data) - проверяем success
             if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], bool):
                 if not result[0] and attempt < max_retries - 1:
                     raise Exception(f"Function returned failure: {result[1]}")
                 return result
-            # Если результат - словарь с ключом error (как у VK)
             if isinstance(result, dict) and result.get('error'):
                 raise Exception(result['error'].get('error_msg', 'Unknown API error'))
             return result
@@ -150,7 +154,7 @@ def save_schedule(schedule):
     except Exception as e:
         log(f"⚠️ Ошибка сохранения: {e}")
 
-# ===== ГЕНЕРАЦИЯ ТЕКСТА (рабочая версия из теста) =====
+# ===== ГЕНЕРАЦИЯ ТЕКСТА =====
 def generate_post_text(niche, topic):
     log(f"🔤 Генерация текста для {niche}: {topic}")
     system_prompt = (
@@ -189,7 +193,7 @@ def generate_post_text(niche, topic):
         log(f"   ❌ Генерация текста провалилась: {e}")
         return None
 
-# ===== ГЕНЕРАЦИЯ КАРТИНКИ (рабочая версия) =====
+# ===== ГЕНЕРАЦИЯ КАРТИНКИ =====
 def generate_image_agnes(prompt):
     log("   🖼️ Попытка Agnes...")
     if not AGNES_API_KEY:
@@ -305,17 +309,19 @@ def download_image(url):
         log(f"   ❌ Скачивание провалилось: {e}")
         return None
 
-# ===== ПУБЛИКАЦИЯ В VK (рабочая версия) =====
+# ===== ПУБЛИКАЦИЯ В VK С ДЕТАЛЬНЫМ ЛОГИРОВАНИЕМ =====
 def vk_api_request(method, params, token, retries=3):
     base_url = "https://api.vk.com/method/"
     params = params.copy()
     params["access_token"] = token
     params["v"] = "5.131"
+    log(f"   VK запрос: {method}, params: {params}")
     def _do():
         response = requests.get(base_url + method, params=params, timeout=60)
         if response.status_code != 200:
             raise Exception(f"HTTP {response.status_code}")
         json_resp = response.json()
+        log(f"   VK ответ: {json_resp}")
         if "error" in json_resp:
             raise Exception(json_resp["error"]["error_msg"])
         return json_resp["response"]
@@ -331,6 +337,7 @@ def post_to_vk(niche, image_bytes, text):
         return False, f"Ниша '{niche}' не найдена"
     vk_token = VK_ACCOUNTS[niche]["token"]
     group_id = VK_ACCOUNTS[niche]["group_id"]
+    log(f"   group_id = {group_id} (тип {type(group_id)})")
 
     if image_bytes is None:
         log("   Публикация без фото (только текст)")
@@ -342,6 +349,7 @@ def post_to_vk(niche, image_bytes, text):
 
     try:
         # Получение upload_url
+        log(f"   Запрос upload_url для группы {abs(group_id)}")
         upload_resp = vk_api_request("photos.getWallUploadServer", {"group_id": abs(group_id)}, token=vk_token, retries=3)
         if upload_resp is None:
             return False, "Не удалось получить upload_url"
@@ -373,6 +381,7 @@ def post_to_vk(niche, image_bytes, text):
             "photo": up["photo"],
             "hash": up["hash"]
         }
+        log(f"   Сохранение фото: {save_params}")
         save_resp = vk_api_request("photos.saveWallPhoto", save_params, token=vk_token, retries=3)
         if save_resp is None:
             return False, "Ошибка сохранения фото"
@@ -387,6 +396,7 @@ def post_to_vk(niche, image_bytes, text):
             "attachments": attachment,
             "from_group": 1
         }
+        log(f"   Публикация поста: {post_params}")
         post_resp = vk_api_request("wall.post", post_params, token=vk_token, retries=3)
         if post_resp is None:
             return False, "Ошибка публикации поста"
@@ -432,7 +442,7 @@ def execute_scheduled_post(item):
     else:
         log(f"❌ Ошибка публикации: {error}")
 
-# ===== ПЛАНИРОВЩИК (проверка каждые 30 секунд) =====
+# ===== ПЛАНИРОВЩИК =====
 def scheduler_loop():
     log("🔄 Планировщик запущен")
     while True:
@@ -527,7 +537,7 @@ def send_message(chat_id, text):
     except Exception as e:
         log(f"⚠️ Ошибка отправки: {e}")
 
-# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ (polling) =====
+# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
 def get_updates(offset):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
     params = {"offset": offset, "timeout": 10, "allowed_updates": ["message"]}
@@ -555,4 +565,4 @@ if __name__ == "__main__":
             update_id = upd["update_id"]
             if "message" in upd:
                 process_message(upd["message"])
-        time.sleep(0.5)  # опрос каждые 0.5 секунды
+        time.sleep(0.5)
